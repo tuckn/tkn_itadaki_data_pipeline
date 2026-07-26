@@ -1,0 +1,13 @@
+.local/
+.venv/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.tkn/config.yaml
+
+# Local operational data and generated compatibility output
+itadaki/
+output/

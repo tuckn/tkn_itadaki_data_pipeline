@@ -1,0 +1,21 @@
+timezone: Asia/Tokyo
+bronze_path: C:/path/to/bronze/Itadaki
+log_path: .local/logs
+
+sources:
+  - name: historical-pc
+    device_id: Example Historical PC
+    source_path: C:/path/to/historical/Rec
+    destination_path: C:/path/to/archive/Example Historical PC/var/log/Itadaki
+    modes:
+      - backfill
+    delete_after_success: false
+
+  - name: current-pc
+    device_id: Example Current PC
+    source_path: C:/path/to/active/Itadaki/Rec
+    destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
+    modes:
+      - backfill
+      - run
+    delete_after_success: true
