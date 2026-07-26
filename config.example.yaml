@@ -1,6 +1,5 @@
 timezone: Asia/Tokyo
 bronze_path: C:/path/to/bronze/Itadaki
-log_path: .local/logs
 
 sources:
   - name: historical-pc

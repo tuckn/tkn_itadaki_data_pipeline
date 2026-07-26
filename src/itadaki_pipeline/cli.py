@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     {
                         "sources": list(resolved.sources),
-                        "values": public_config(config),
+                        "values": public_config(config, resolved.paths),
                     },
                     ensure_ascii=False,
                     indent=2,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from itadaki_pipeline.config import resolve_config
+from itadaki_pipeline.paths import user_paths
 
 
 def test_config_precedence_and_cwd_relative_paths(
@@ -57,6 +58,7 @@ def test_config_precedence_and_cwd_relative_paths(
         str(cwd_config),
         str(explicit),
     )
+    assert resolved.paths == user_paths()
 
 
 def test_legacy_toml_keys_remain_supported(tmp_path: Path, monkeypatch) -> None:
@@ -83,3 +85,4 @@ def test_legacy_toml_keys_remain_supported(tmp_path: Path, monkeypatch) -> None:
 
     assert resolved.config.bronze_root == tmp_path / "bronze"
     assert resolved.config.sources[0].rec_dir == tmp_path / "source"
+    assert resolved.config.log_dir == user_paths().state_dir / "logs"

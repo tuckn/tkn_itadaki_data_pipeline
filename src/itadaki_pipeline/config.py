@@ -10,8 +10,7 @@ from typing import Any
 
 import yaml
 
-APP_NAME = "itadaki_pipeline"
-CONFIG_FILENAME = "config.yaml"
+from .paths import CONFIG_FILENAME, AppPaths, runtime_temp_base, user_paths
 
 
 @dataclass(frozen=True)
@@ -38,10 +37,11 @@ class PipelineConfig:
 class ResolvedConfig:
     config: PipelineConfig
     sources: tuple[str, ...]
+    paths: AppPaths
 
 
 def global_config_path() -> Path:
-    return Path.home() / ".tkn" / APP_NAME / CONFIG_FILENAME
+    return user_paths().config_file
 
 
 def cwd_config_path(cwd: Path) -> Path:
@@ -57,10 +57,7 @@ def _path(value: str | Path, base: Path) -> Path:
 
 def _timezone(name: str) -> dt.tzinfo:
     if name != "Asia/Tokyo":
-        raise ValueError(
-            "This Windows pipeline currently supports only "
-            'timezone: "Asia/Tokyo"'
-        )
+        raise ValueError('This pipeline currently supports only timezone: "Asia/Tokyo"')
     return dt.timezone(dt.timedelta(hours=9), name=name)
 
 
@@ -97,6 +94,7 @@ def _build_config(
     *,
     cwd: Path,
     config_path: Path,
+    paths: AppPaths,
 ) -> PipelineConfig:
     _only_known_keys(
         raw,
@@ -175,7 +173,7 @@ def _build_config(
         timezone=_timezone(timezone_name),
         bronze_root=_path(str(bronze_root_value), cwd),
         log_dir=_path(
-            str(raw.get("log_path", raw.get("log_dir", ".local/logs"))),
+            str(raw.get("log_path", raw.get("log_dir", paths.state_dir / "logs"))),
             cwd,
         ),
         sources=tuple(sources),
@@ -189,6 +187,7 @@ def resolve_config(
 ) -> ResolvedConfig:
     """Resolve global, CWD, and explicit configuration in that order."""
     current = (cwd or Path.cwd()).resolve()
+    paths = user_paths()
     candidates = [global_config_path(), cwd_config_path(current)]
     if explicit_config is not None:
         candidates.append(explicit_config.expanduser().resolve())
@@ -207,8 +206,14 @@ def resolve_config(
         raise FileNotFoundError(f"No configuration file found. Searched: {searched}")
 
     return ResolvedConfig(
-        config=_build_config(values, cwd=current, config_path=last_path),
+        config=_build_config(
+            values,
+            cwd=current,
+            config_path=last_path,
+            paths=paths,
+        ),
         sources=tuple(sources),
+        paths=paths,
     )
 
 
@@ -217,11 +222,23 @@ def load_config(path: Path) -> PipelineConfig:
     return resolve_config(explicit_config=path).config
 
 
-def public_config(config: PipelineConfig) -> dict[str, Any]:
+def public_config(
+    config: PipelineConfig,
+    paths: AppPaths | None = None,
+) -> dict[str, Any]:
+    storage = paths or user_paths()
     return {
         "timezone": config.timezone_name,
         "bronze_path": str(config.bronze_root),
         "log_path": str(config.log_dir),
+        "storage": {
+            "app_root": str(storage.app_root),
+            "config_path": str(storage.config_file),
+            "data_path": str(storage.data_dir),
+            "state_path": str(storage.state_dir),
+            "cache_path": str(storage.cache_dir),
+            "runtime_temp_base": str(runtime_temp_base()),
+        },
         "sources": [
             {
                 "name": source.name,

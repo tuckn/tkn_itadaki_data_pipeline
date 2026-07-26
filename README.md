@@ -1,42 +1,70 @@
 # Itadaki pipeline
 
-Itadaki の完了済み日別 `.rec` を発生PC別のRaw archiveへ保存し、分析用の
-月次 Bronze CSVへ変換するWindows向けCLIです。当日分と `Total.ini` は移動
-せず、dry-run、SHA-256照合、manifest、原子的なCSV置換を行います。
+Itadakiが記録した日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
+変換するCLIです。
 
-## Setup with uv
+当日分の記録は処理せず、完了した日だけを対象にします。ファイルを変更する前に
+dry-runで対象を確認でき、実行時はSHA-256照合、manifest、CSVの原子的な置換を
+行います。
 
-開発・実行環境は `uv` で再現できます。
+## 必要なもの
 
-```powershell
-uv sync
-uv run itadaki-pipeline --help
-uv run itadaki-pipeline config show
-```
+- Windowsで記録されたItadakiの`Rec`フォルダ
+- Python 3.11以上
+- [uv](https://docs.astral.sh/uv/)
 
-CLIを独立したツールとして導入する場合は次を実行します。
+## インストール
 
-```powershell
-uv tool install .
+リポジトリのソースコードの変更を、再インストールなしで反映するeditable
+installation:
+
+```console
+uv tool install -e "C:\path\to\tkn_itadaki_data_pipeline"
 itadaki-pipeline --help
 ```
 
-## Configuration
+例示したパスは、このリポジトリの実際のフォルダパスに置き換えてください。
+リポジトリ内で実行する場合は、次の短い形式も使用できます。
 
-YAML設定は次の順で読み込まれ、後の値が前の値を上書きします。
+```console
+uv tool install -e .
+```
 
-1. `~/.tkn/itadaki_pipeline/config.yaml`
-2. CWDの `.tkn/config.yaml`
-3. `--config` で明示したYAMLまたは従来のTOML
+editable installationでは、通常のPythonソースの変更は自動的に反映されます。
+依存関係や`pyproject.toml`の`[project.scripts]`を変更した場合、または
+リポジトリを移動した場合は、インストールコマンドを再実行してください。
 
-相対パスは、どの設定ファイルに書かれていてもCWDを基準に解決します。
-公開用の書式は [`config.example.yaml`](config.example.yaml) を参照してください。
-CWDの `.tkn/config.yaml` は実パスを含むためGit対象外です。
+ソースコードの変更を追従しない独立したinstallationに切り替える場合:
+
+```console
+uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --force
+```
+
+### インストールされるコマンド
+
+インストールすると、次の2つのコマンドが使用できるようになります。
+
+- `itadaki-pipeline`: Raw archiveの作成と月次Bronze CSVへの変換に使う通常のコマンド
+- `itadaki-legacy-export`: 旧形式の3 CSVを再生成するために残している互換コマンド
+
+通常の利用と定期実行では、`itadaki-pipeline`だけを使用します。
+`itadaki-legacy-export`については
+[旧形式のCSVを作る](#旧形式のcsvを作る)を参照してください。
+
+## 初期設定
+
+ユーザー単位の設定ファイルを作成します。
+
+```console
+New-Item -ItemType Directory -Force "$HOME\.tkn\itadaki_data_pipeline"
+Copy-Item ".\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
+```
+
+作成した`config.yaml`を開き、使用環境に合わせてパスと端末名を変更します。
 
 ```yaml
 timezone: Asia/Tokyo
 bronze_path: C:/path/to/bronze/Itadaki
-log_path: .local/logs
 
 sources:
   - name: current-pc
@@ -49,110 +77,222 @@ sources:
     delete_after_success: true
 ```
 
-- `source_path`: Itadakiの `Rec` フォルダ
-- `destination_path`: 検証済み `.rec` を保存する端末別Raw archive
-- `bronze_path`: `InputEvents` と `DailyUsage` の出力ルート
-- `delete_after_success`: archive、CSV、manifestの確定後に完了日分を
-  `source_path` から削除するか
+- `source_path`: Itadakiの`Rec`フォルダ
+- `destination_path`: 検証済み`.rec`を保存する端末別Raw archive
+- `bronze_path`: `InputEvents`と`DailyUsage`の出力ルート
+- `device_id`: 記録元のPCを識別する名前
+- `modes`: このsourceを`backfill`、`run`のどちらで処理するか
+- `delete_after_success`: archive、CSV、manifestの確定後に、完了日分を
+  `source_path`から削除するか
+- `log_path`: 省略時は`~/.tkn/itadaki_data_pipeline/state/logs`
 
-`device_id` はItadakiから取得せず、PCごとに明示します。別PCの履歴を現在の
-PCへ誤帰属させないため、端末ごとのsource設定を残してください。
+別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はsourceごとに明示します。
+公開用の全設定例は[`config.example.yaml`](config.example.yaml)を参照してください。
 
-## Commands
+設定を確認します。
 
-```powershell
-uv run itadaki-pipeline config show
-uv run itadaki-pipeline plan
-uv run itadaki-pipeline backfill
-uv run itadaki-pipeline backfill --apply
-uv run itadaki-pipeline run --apply
-uv run itadaki-pipeline verify
+```console
+itadaki-pipeline config show
 ```
 
-明示設定を使う場合、`--config` はコマンドの前後どちらにも置けます。
+実際に読み込まれた設定ファイルと、解決後の設定値がJSONで表示されます。
+ファイルの移動やCSVの作成は行いません。
 
-```powershell
-uv run itadaki-pipeline --config C:/path/to/config.yaml plan
-uv run itadaki-pipeline plan --config C:/path/to/config.yaml
+## 基本的な使用方法
+
+### 1. 処理対象を確認する
+
+```console
+itadaki-pipeline plan
 ```
 
-`plan` は常にdry-runです。`backfill` と `run` も `--apply` がない限り
-ファイルを変更しません。
+`modes`に`backfill`を含むsourceについて、処理対象の日付、ファイル数、容量、
+検証警告を表示します。`plan`は常にdry-runで、ファイルを変更しません。
 
-## Safety model
+### 2. 初回または過去データを処理する
 
-完了日の `Key`、`MoC`、`MoM`、`Pow` を検証し、Raw archiveへコピーして
-SHA-256を照合します。archiveから対象月のCSV全体を一時生成・検証し、同じ
-フォルダ内で置換します。manifest確定後、設定で許可されたsourceだけを
-削除します。既存archiveとハッシュが異なる場合はsourceを残して停止します。
+まずdry-runで確認します。
 
-内部イベント日時とファイル名の日付が異なる実データも破棄しません。
-ファイル名の日付をpartition日として維持し、manifestへ警告を記録します。
-`Key`由来のマウス件数と `MoC` の日次値も独立して保存し、不一致は警告に
-します。
+```console
+itadaki-pipeline backfill
+```
 
-CSVは次の場所へ出力されます。
+内容を確認してから、実際に処理します。
+
+```console
+itadaki-pipeline backfill --apply
+```
+
+`modes`に`backfill`を含むsourceが対象です。完了済みの`.rec`をRaw archiveへ
+保存し、対象月のBronze CSVとmanifestを更新します。
+
+### 3. 日常的なデータを処理する
+
+```console
+itadaki-pipeline run
+```
+
+これはdry-runです。内容を確認してから、次を実行します。
+
+```console
+itadaki-pipeline run --apply
+```
+
+`modes`に`run`を含むsourceだけが対象です。当日分と`Total.ini`は処理しません。
+定期実行にはこのコマンドを使用します。
+
+### 4. 作成済みデータを検証する
+
+```console
+itadaki-pipeline verify
+```
+
+Raw archiveから月次CSVを再計算して内容の一致を検証し、確認した月数と行数を
+表示します。月ごとの詳細も表示する場合:
+
+```console
+itadaki-pipeline verify --details
+```
+
+`backfill`と`run`は、`--apply`を付けない限りファイルを変更しません。
+
+## 出力
+
+検証済みの元データは、設定した`destination_path`の下へ端末別Raw archiveとして
+保存されます。
+
+分析用CSVは次の場所へ出力されます。
 
 ```text
 <bronze-path>/<device-id>/InputEvents/yyyy/MM.csv
 <bronze-path>/<device-id>/DailyUsage/yyyy/MM.csv
 ```
 
-`InputEvents` は `Key` の1レコードを1行として保存します。主な列は
+`InputEvents`は、`Key`の1レコードを1行として保存します。主な列は
 `device_id`、`event_date`、`event_datetime_local`、`event_type`、
-`key_code`、`key_name`、`is_mouse` です。
+`key_code`、`key_name`、`is_mouse`です。
 
-`DailyUsage` は4系列を日単位で統合します。主な列は `key_count`、
-`mouse_clicks`、`moc_clicks`、`mouse_move_cm`、`power_on_sec` です。
-右クリックは `InputEvents.key_code = 101` で集計できます。
+`DailyUsage`は`Key`、`MoC`、`MoM`、`Pow`の4系列を日単位で統合します。
+主な列は`key_count`、`mouse_clicks`、`moc_clicks`、`mouse_move_cm`、
+`power_on_sec`です。
 
-## Repository layout
+## 安全性
+
+処理時には次の保護を行います。
+
+- 当日分と`Total.ini`を処理対象から除外
+- 完了日の`Key`、`MoC`、`MoM`、`Pow`を検証
+- Raw archiveへのコピー後にSHA-256を照合
+- 対象月のCSV全体を一時生成し、検証後に原子的に置換
+- manifest確定後に限り、設定で許可されたsourceファイルを削除
+- 既存archiveとsourceのハッシュが異なる場合は、sourceを残して停止
+
+内部イベント日時とファイル名の日付が異なるデータも破棄しません。ファイル名の
+日付をpartition日として維持し、manifestへ警告を記録します。`Key`由来の
+マウス件数と`MoC`の日次値も独立して保存し、不一致は警告にします。
+
+## 設定ファイルの探索順
+
+設定は次の順で読み込まれ、後の値が前の値を上書きします。
+
+1. `~/.tkn/itadaki_data_pipeline/config.yaml`
+2. current working directoryの`.tkn/config.yaml`
+3. `--config`で明示したYAMLまたは従来のTOML
+
+通常はユーザー単位の`~/.tkn/itadaki_data_pipeline/config.yaml`だけで
+使用できます。特定の作業フォルダだけ設定を上書きする場合は
+`.tkn/config.yaml`を使用します。
+
+明示した設定ファイルを使う場合、`--config`はコマンドの前後どちらにも置けます。
+
+```console
+itadaki-pipeline --config C:/path/to/config.yaml plan
+itadaki-pipeline plan --config C:/path/to/config.yaml
+```
+
+相対パスは、設定ファイルの場所ではなくcurrent working directoryを基準に
+解決します。実パスを含む`.tkn/config.yaml`はGitへcommitしないでください。
+
+## ユーザーディレクトリ
+
+永続的なユーザー設定とアプリデータは、次の場所を使用します。
 
 ```text
-.
-├── src/itadaki_pipeline/       # 配布するCLIパッケージ
-├── tests/
-│   └── fixtures/
-│       ├── itadaki_rec/        # 1日分×4系列の最小バイナリfixture
-│       └── legacy_output/      # 互換出力の期待CSV
-├── scripts/                    # 運用・検証補助
-├── config.example.yaml
-├── pyproject.toml
-└── uv.lock
+~/.tkn/itadaki_data_pipeline/
+├── config.yaml
+├── data/
+└── state/
+    └── logs/
 ```
 
-実際のItadaki本体、`.chm`、大量の `.rec`、生成済みCSVは配布物やsampleに
-含めません。テストに必要なバイナリだけを `tests/fixtures/` に置きます。
+- `config.yaml`: ユーザー単位の設定
+- `data/`: 今後のアプリ管理データ
+- `state/`: ログや実行履歴など、再起動後も必要な状態
+- `~/.cache/itadaki_data_pipeline/`: 再生成できるキャッシュ
+- `%TMP%`などのplatform標準一時領域: 実行中だけ必要なscratch
 
-旧形式の3 CSVが必要な場合は、互換スクリプトをリポジトリ内で実行できます。
+この配置は、設定、永続データ、状態、キャッシュ、一時ファイルを分ける
+XDG Base Directory Specificationの考え方を尊重しています。WindowsとLinuxの
+パスはPythonの`Path.home()`と`tempfile`で解決します。
 
-```powershell
-uv run itadaki-legacy-export C:/path/to/Rec C:/path/to/output
-```
+## 定期実行
 
-`uv run python itadaki_parse.py ...` も互換wrapperとして残しています。
-
-## Scheduled task
-
-`scripts/register_scheduled_task.ps1` は、CWD設定を使って次のコマンドを
-毎週実行するWindowsタスクを登録します。
-
-```text
-uv run --frozen itadaki-pipeline run --apply
-```
+Windows Task Schedulerへ毎週の処理を登録する補助スクリプトがあります。
 
 ```powershell
 .\scripts\register_scheduled_task.ps1 `
   -WorkspacePath (Get-Location).Path
 ```
 
-別の設定を固定したい場合だけ `-ConfigPath` を追加します。登録内容を変更した
-後はスクリプトを再実行してください。
+現在の登録スクリプトは、毎週日曜日の03:00に次のコマンドを実行します。
 
-## Quality checks
+```text
+uv run --frozen itadaki-pipeline run --apply
+```
 
-```powershell
+通常はユーザー単位の設定ファイルが自動的に読み込まれます。別の設定を固定する
+場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、スクリプトを
+再実行してください。
+
+## 旧形式のCSVを作る
+
+`itadaki-legacy-export`は、現在のRaw/Bronze pipelineを導入する前に使用していた
+3種類のCSVを、`Rec`フォルダ全体から一括生成する互換コマンドです。
+
+```console
+itadaki-legacy-export C:/path/to/Rec C:/path/to/output
+```
+
+出力先には次のファイルが作成されます。
+
+- `key_events.csv`
+- `daily_summary.csv`
+- `key_stats.csv`
+
+このコマンドはRaw archive、manifest、月次Bronze CSVを作成せず、
+`config.yaml`も使用しません。通常の取り込みやTask Schedulerでは使いません。
+
+## 開発
+
+リポジトリ内で開発・検証する場合:
+
+```console
+uv sync --locked
 uv run pytest
 uv run ruff check .
 uv build
+```
+
+リポジトリにはテストに必要な1日分の最小fixtureだけを含めています。実際の
+Itadaki本体、大量の`.rec`、生成済みCSVは含めません。
+
+```text
+.
+├── src/itadaki_pipeline/
+├── tests/
+│   └── fixtures/
+├── scripts/
+├── config.example.yaml
+├── pyproject.toml
+└── uv.lock
 ```
