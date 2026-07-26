@@ -18,13 +18,13 @@ LOG = logging.getLogger("itadaki_pipeline")
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="itadaki-pipeline",
-        description="Archive Itadaki Rec logs and build idempotent Bronze CSVs.",
+        description="Archive Itadaki Rec logs and build idempotent processed CSVs.",
     )
     parser.add_argument(
         "--config",
         type=Path,
         help=(
-            "Explicit YAML/TOML config. Precedence: global, CWD, explicit. "
+            "Explicit YAML config. Precedence: global, CWD, explicit. "
             "May also be placed after a pipeline command."
         ),
     )
@@ -35,7 +35,7 @@ def _parser() -> argparse.ArgumentParser:
             "--config",
             type=Path,
             dest="command_config",
-            help="Explicit YAML/TOML configuration path.",
+            help="Explicit YAML configuration path.",
         )
         if command == "verify":
             subparser.add_argument(

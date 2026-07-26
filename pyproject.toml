@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "itadaki-pipeline"
 version = "0.1.0"
-description = "Archive Itadaki records and build verified monthly Bronze datasets."
+description = "Archive Itadaki records and build verified monthly processed datasets."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,7 +14,6 @@ dependencies = [
 
 [project.scripts]
 itadaki-pipeline = "itadaki_pipeline.cli:main"
-itadaki-legacy-export = "itadaki_pipeline.legacy:main"
 
 [dependency-groups]
 dev = [

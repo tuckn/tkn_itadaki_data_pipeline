@@ -45,7 +45,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description 'Archive Itadaki Rec logs and build monthly Bronze CSVs.' `
+    -Description 'Archive Itadaki Rec logs and build monthly processed CSV datasets.' `
     -Force | Out-Null
 
 Get-ScheduledTask -TaskName $TaskName

@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from itadaki_pipeline import legacy as itadaki_parse
 from itadaki_pipeline.config import PipelineConfig, SourceConfig
 from itadaki_pipeline.parser import ParseError, iter_key_file, parse_moc_file
 from itadaki_pipeline.pipeline import (
@@ -21,7 +20,6 @@ from itadaki_pipeline.pipeline import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_REC = ROOT / "tests" / "fixtures" / "itadaki_rec"
-LEGACY_OUTPUT = ROOT / "tests" / "fixtures" / "legacy_output"
 
 
 class ParserTests(unittest.TestCase):
@@ -62,7 +60,7 @@ class PipelineTests(unittest.TestCase):
         self.rec_dir = self.root / "source" / "Rec"
         shutil.copytree(FIXTURE_REC, self.rec_dir)
         self.archive = self.root / "archive"
-        self.bronze = self.root / "bronze"
+        self.processed_data = self.root / "processed-data"
         self.source = SourceConfig(
             name="fixture",
             device_id="Example PC",
@@ -72,10 +70,10 @@ class PipelineTests(unittest.TestCase):
             delete_after_success=True,
         )
         self.config = PipelineConfig(
-            config_path=self.root / "pipeline.toml",
+            config_path=self.root / "config.yaml",
             timezone_name="Asia/Tokyo",
             timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
-            bronze_root=self.bronze,
+            processed_data_root=self.processed_data,
             log_dir=self.root / "logs",
             sources=(self.source,),
         )
@@ -106,10 +104,10 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse((self.rec_dir / "Key" / "20260404.rec").exists())
 
         event_csv = (
-            self.bronze / "Example PC" / "InputEvents" / "2026" / "04.csv"
+            self.processed_data / "Example PC" / "InputEvents" / "2026" / "04.csv"
         )
         daily_csv = (
-            self.bronze / "Example PC" / "DailyUsage" / "2026" / "04.csv"
+            self.processed_data / "Example PC" / "DailyUsage" / "2026" / "04.csv"
         )
         with event_csv.open("r", encoding="utf-8-sig", newline="") as handle:
             rows = list(csv.reader(handle))
@@ -178,29 +176,6 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ParseError):
             run_pipeline(self.config, "backfill", apply=True, now=self.now)
         self.assertTrue((self.rec_dir / "MoC" / "20260404.rec").exists())
-
-
-class LegacyCompatibilityTests(unittest.TestCase):
-    def test_legacy_fixture_outputs_match(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            destination = Path(directory)
-            data = itadaki_parse.parse_rec_folder(FIXTURE_REC)
-            itadaki_parse.export_key_events_csv(
-                data, destination / "key_events.csv"
-            )
-            itadaki_parse.export_daily_summary_csv(
-                data, destination / "daily_summary.csv"
-            )
-            itadaki_parse.export_key_stats_csv(
-                data, destination / "key_stats.csv"
-            )
-            for name in ("key_events.csv", "daily_summary.csv", "key_stats.csv"):
-                expected = (LEGACY_OUTPUT / name).read_text(
-                    encoding="utf-8-sig"
-                )
-                actual = (destination / name).read_text(encoding="utf-8-sig")
-                self.assertEqual(expected, actual)
-
 
 if __name__ == "__main__":
     unittest.main()

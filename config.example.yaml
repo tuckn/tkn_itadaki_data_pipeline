@@ -1,5 +1,5 @@
 timezone: Asia/Tokyo
-bronze_path: C:/path/to/bronze/Itadaki
+processed_data_path: C:/path/to/processed-data/Itadaki
 
 sources:
   - name: historical-pc

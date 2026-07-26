@@ -42,14 +42,9 @@ uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --force
 
 ### インストールされるコマンド
 
-インストールすると、次の2つのコマンドが使用できるようになります。
+インストールすると、次のコマンドが使用できるようになります。
 
-- `itadaki-pipeline`: Raw archiveの作成と月次Bronze CSVへの変換に使う通常のコマンド
-- `itadaki-legacy-export`: 旧形式の3 CSVを再生成するために残している互換コマンド
-
-通常の利用と定期実行では、`itadaki-pipeline`だけを使用します。
-`itadaki-legacy-export`については
-[旧形式のCSVを作る](#旧形式のcsvを作る)を参照してください。
+- `itadaki-pipeline`: Raw archiveの作成と処理済み月次CSVへの変換に使うコマンド
 
 ## 初期設定
 
@@ -64,7 +59,7 @@ Copy-Item ".\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
 
 ```yaml
 timezone: Asia/Tokyo
-bronze_path: C:/path/to/bronze/Itadaki
+processed_data_path: C:/path/to/processed-data/Itadaki
 
 sources:
   - name: current-pc
@@ -79,7 +74,7 @@ sources:
 
 - `source_path`: Itadakiの`Rec`フォルダ
 - `destination_path`: 検証済み`.rec`を保存する端末別Raw archive
-- `bronze_path`: `InputEvents`と`DailyUsage`の出力ルート
+- `processed_data_path`: `InputEvents`と`DailyUsage`の出力ルート
 - `device_id`: 記録元のPCを識別する名前
 - `modes`: このsourceを`backfill`、`run`のどちらで処理するか
 - `delete_after_success`: archive、CSV、manifestの確定後に、完了日分を
@@ -124,7 +119,7 @@ itadaki-pipeline backfill --apply
 ```
 
 `modes`に`backfill`を含むsourceが対象です。完了済みの`.rec`をRaw archiveへ
-保存し、対象月のBronze CSVとmanifestを更新します。
+保存し、対象月の処理済みCSVとmanifestを更新します。
 
 ### 3. 日常的なデータを処理する
 
@@ -164,8 +159,8 @@ itadaki-pipeline verify --details
 分析用CSVは次の場所へ出力されます。
 
 ```text
-<bronze-path>/<device-id>/InputEvents/yyyy/MM.csv
-<bronze-path>/<device-id>/DailyUsage/yyyy/MM.csv
+<processed-data-path>/<device-id>/InputEvents/yyyy/MM.csv
+<processed-data-path>/<device-id>/DailyUsage/yyyy/MM.csv
 ```
 
 `InputEvents`は、`Key`の1レコードを1行として保存します。主な列は
@@ -197,7 +192,7 @@ itadaki-pipeline verify --details
 
 1. `~/.tkn/itadaki_data_pipeline/config.yaml`
 2. current working directoryの`.tkn/config.yaml`
-3. `--config`で明示したYAMLまたは従来のTOML
+3. `--config`で明示したYAML
 
 通常はユーザー単位の`~/.tkn/itadaki_data_pipeline/config.yaml`だけで
 使用できます。特定の作業フォルダだけ設定を上書きする場合は
@@ -253,24 +248,6 @@ uv run --frozen itadaki-pipeline run --apply
 通常はユーザー単位の設定ファイルが自動的に読み込まれます。別の設定を固定する
 場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、スクリプトを
 再実行してください。
-
-## 旧形式のCSVを作る
-
-`itadaki-legacy-export`は、現在のRaw/Bronze pipelineを導入する前に使用していた
-3種類のCSVを、`Rec`フォルダ全体から一括生成する互換コマンドです。
-
-```console
-itadaki-legacy-export C:/path/to/Rec C:/path/to/output
-```
-
-出力先には次のファイルが作成されます。
-
-- `key_events.csv`
-- `daily_summary.csv`
-- `key_stats.csv`
-
-このコマンドはRaw archive、manifest、月次Bronze CSVを作成せず、
-`config.yaml`も使用しません。通常の取り込みやTask Schedulerでは使いません。
 
 ## 開発
 

@@ -100,31 +100,6 @@ def iter_key_file(
         )
 
 
-def parse_key_file(path: Path) -> list[dict]:
-    """Compatibility shape used by the legacy CSV exporter."""
-    records: list[dict] = []
-    data = path.read_bytes()
-    if len(data) % KEY_RECORD_SIZE:
-        raise ParseError(
-            f"{path}: size {len(data)} is not divisible by {KEY_RECORD_SIZE}"
-        )
-    for index in range(len(data) // KEY_RECORD_SIZE):
-        offset = index * KEY_RECORD_SIZE
-        code = struct.unpack_from("<I", data, offset)[0]
-        raw_timestamp = struct.unpack_from("<d", data, offset + 4)[0]
-        event_datetime = delphi_datetime_to_python(raw_timestamp)
-        records.append(
-            {
-                "code": code,
-                "key_name": key_name(code),
-                "is_mouse": code in (100, 101),
-                "datetime": event_datetime,
-                "timestamp_raw": raw_timestamp,
-            }
-        )
-    return records
-
-
 def _read_exact(path: Path, size: int) -> bytes:
     data = path.read_bytes()
     if len(data) != size:

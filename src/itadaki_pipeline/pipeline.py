@@ -1,4 +1,4 @@
-"""Archive verified records and build monthly Bronze datasets."""
+"""Archive verified records and build monthly processed datasets."""
 
 from __future__ import annotations
 
@@ -379,7 +379,7 @@ def build_month(
     if not archive_files:
         return [], []
 
-    device_root = config.bronze_root / source.device_id
+    device_root = config.processed_data_root / source.device_id
     input_destination = (
         device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
     )
@@ -603,7 +603,7 @@ def process_source(
         "outputs": [
             {
                 "dataset": output.dataset,
-                "path": _relative(output.path, config.bronze_root),
+                "path": _relative(output.path, config.processed_data_root),
                 "row_count": output.row_count,
                 "sha256": output.sha256,
                 "action": output.action,
@@ -740,7 +740,7 @@ def _compare_csv(
     expected_rows: Iterable[list[object]],
 ) -> int:
     if not path.is_file():
-        raise FileNotFoundError(f"Expected Bronze output is missing: {path}")
+        raise FileNotFoundError(f"Expected processed data output is missing: {path}")
     count = 0
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
@@ -774,7 +774,7 @@ def verify_config(config: PipelineConfig) -> list[dict]:
             events, daily, expected_events, expected_daily = _expected_month_rows(
                 source, year, month
             )
-            device_root = config.bronze_root / source.device_id
+            device_root = config.processed_data_root / source.device_id
             event_path = (
                 device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
             )

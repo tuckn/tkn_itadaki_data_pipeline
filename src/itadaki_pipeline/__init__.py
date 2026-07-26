@@ -1,4 +1,4 @@
-"""Idempotent archive and Bronze pipeline for Itadaki ``.rec`` logs."""
+"""Idempotent archive and processed-data pipeline for Itadaki ``.rec`` logs."""
 
 from .parser import KEY_NAMES, ParsedEvent
 

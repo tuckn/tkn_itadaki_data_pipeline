@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +27,7 @@ class PipelineConfig:
     config_path: Path
     timezone_name: str
     timezone: dt.tzinfo
-    bronze_root: Path
+    processed_data_root: Path
     log_dir: Path
     sources: tuple[SourceConfig, ...]
 
@@ -62,13 +61,11 @@ def _timezone(name: str) -> dt.tzinfo:
 
 
 def _load_mapping(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        raise ValueError(f"Config must be a YAML file (.yaml or .yml): {path}")
     try:
-        if path.suffix.lower() == ".toml":
-            with path.open("rb") as handle:
-                value = tomllib.load(handle)
-        else:
-            value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError, yaml.YAMLError) as exc:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ValueError(f"Cannot read config {path}: {exc}") from exc
 
     if value is None:
@@ -100,19 +97,17 @@ def _build_config(
         raw,
         {
             "timezone",
-            "bronze_path",
-            "bronze_root",
+            "processed_data_path",
             "log_path",
-            "log_dir",
             "sources",
         },
         location=str(config_path),
     )
 
     timezone_name = str(raw.get("timezone", "Asia/Tokyo"))
-    bronze_root_value = raw.get("bronze_path", raw.get("bronze_root"))
-    if not bronze_root_value:
-        raise ValueError("bronze_path is required")
+    processed_data_root_value = raw.get("processed_data_path")
+    if not processed_data_root_value:
+        raise ValueError("processed_data_path is required")
 
     source_items = raw.get("sources", [])
     if not isinstance(source_items, list) or not source_items:
@@ -130,8 +125,6 @@ def _build_config(
                 "device_id",
                 "source_path",
                 "destination_path",
-                "rec_dir",
-                "archive_root",
                 "modes",
                 "delete_after_success",
             },
@@ -146,11 +139,8 @@ def _build_config(
         if unsupported:
             raise ValueError(f"{name}: unsupported modes: {sorted(unsupported)}")
 
-        source_path = item.get("source_path", item.get("rec_dir"))
-        destination_path = item.get(
-            "destination_path",
-            item.get("archive_root"),
-        )
+        source_path = item.get("source_path")
+        destination_path = item.get("destination_path")
         if not source_path:
             raise ValueError(f"{name}: source_path is required")
         if not destination_path:
@@ -171,9 +161,9 @@ def _build_config(
         config_path=config_path,
         timezone_name=timezone_name,
         timezone=_timezone(timezone_name),
-        bronze_root=_path(str(bronze_root_value), cwd),
+        processed_data_root=_path(str(processed_data_root_value), cwd),
         log_dir=_path(
-            str(raw.get("log_path", raw.get("log_dir", paths.state_dir / "logs"))),
+            str(raw.get("log_path", paths.state_dir / "logs")),
             cwd,
         ),
         sources=tuple(sources),
@@ -216,12 +206,6 @@ def resolve_config(
         paths=paths,
     )
 
-
-def load_config(path: Path) -> PipelineConfig:
-    """Compatibility helper for callers that already pass an explicit config."""
-    return resolve_config(explicit_config=path).config
-
-
 def public_config(
     config: PipelineConfig,
     paths: AppPaths | None = None,
@@ -229,7 +213,7 @@ def public_config(
     storage = paths or user_paths()
     return {
         "timezone": config.timezone_name,
-        "bronze_path": str(config.bronze_root),
+        "processed_data_path": str(config.processed_data_root),
         "log_path": str(config.log_dir),
         "storage": {
             "app_root": str(storage.app_root),
