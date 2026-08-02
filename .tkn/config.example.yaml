@@ -1,5 +1,6 @@
 timezone: Asia/Tokyo
 processed_data_path: C:/path/to/processed-data/Itadaki
+weekly_mart_path: C:/path/to/marts/activities/computerActivityWeekly
 
 sources:
   - name: historical-pc
@@ -16,5 +17,5 @@ sources:
     destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
     modes:
       - backfill
-      - run
+      - ingest
     delete_after_success: true

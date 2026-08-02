@@ -1,7 +1,7 @@
 # Itadaki Data Pipeline
 
 WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと』](https://www.vector.co.jp/soft/win95/util/se263388.html) （以後、Itadaki）が記録したキーボードとマウスの操作ログである日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
-変換するCLIです。
+変換し、Itadaki単独の観測値をISO週で集計・可視化するCLIです。
 
 当日分の記録は処理せず、完了した日だけを対象にします。ファイルを変更する前に
 dry-runで対象を確認でき、実行時はSHA-256照合、manifest、CSVの原子的な置換を
@@ -52,7 +52,7 @@ uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --force
 
 ```console
 New-Item -ItemType Directory -Force "$HOME\.tkn\itadaki_data_pipeline"
-Copy-Item ".\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
+Copy-Item ".\.tkn\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
 ```
 
 作成した`config.yaml`を開き、使用環境に合わせてパスと端末名を変更します。
@@ -60,6 +60,7 @@ Copy-Item ".\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
 ```yaml
 timezone: Asia/Tokyo
 processed_data_path: C:/path/to/processed-data/Itadaki
+weekly_mart_path: C:/path/to/marts/activities/computerActivityWeekly
 
 sources:
   - name: current-pc
@@ -68,7 +69,7 @@ sources:
     destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
     modes:
       - backfill
-      - run
+      - ingest
     delete_after_success: true
 ```
 
@@ -76,13 +77,15 @@ sources:
 - `destination_path`: 検証済み`.rec`を保存する端末別Raw archive
 - `processed_data_path`: `InputEvents`と`DailyUsage`の出力ルート
 - `device_id`: 記録元のPCを識別する名前
-- `modes`: このsourceを`backfill`、`run`のどちらで処理するか
+- `modes`: このsourceを`backfill`、`ingest`のどちらで処理するか
+- `weekly_mart_path`: `build-weekly`が週次martを出力するルート。ほかのコマンド
+  では省略可能
 - `delete_after_success`: archive、CSV、manifestの確定後に、完了日分を
   `source_path`から削除するか
 - `log_path`: 省略時は`~/.tkn/itadaki_data_pipeline/state/logs`
 
 別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はsourceごとに明示します。
-公開用の全設定例は[`config.example.yaml`](config.example.yaml)を参照してください。
+公開用の全設定例は[`.tkn/config.example.yaml`](.tkn/config.example.yaml)を参照してください。
 
 設定を確認します。
 
@@ -124,19 +127,36 @@ itadaki-pipeline backfill --apply
 ### 3. 日常的なデータを処理する
 
 ```console
-itadaki-pipeline run
+itadaki-pipeline ingest
 ```
 
 これはdry-runです。内容を確認してから、次を実行します。
 
 ```console
-itadaki-pipeline run --apply
+itadaki-pipeline ingest --apply
 ```
 
-`modes`に`run`を含むsourceだけが対象です。当日分と`Total.ini`は処理しません。
+`modes`に`ingest`を含むsourceだけが対象です。当日分と`Total.ini`は処理しません。
 定期実行にはこのコマンドを使用します。
 
-### 4. 作成済みデータを検証する
+旧`run`コマンドと設定の`modes: [run]`も当面は受理しますが、非推奨警告を
+stderrへ出し、内部では`ingest`として処理します。
+
+### 4. 完全週の活動martを作る
+
+`ingest --apply`が確定したwatermarkまでを対象に、ISO 8601の月曜～日曜で
+週次出力を作ります。最初にdry-runでmissing/stale週を確認します。
+
+```console
+itadaki-pipeline build-weekly
+itadaki-pipeline build-weekly --apply
+```
+
+初回は最古のsource rowを含む週から処理し、以後は入力変更、出力欠損、hash
+不一致がある完全週だけを再生成します。記録のない週も出力し、活動0とは解釈せず
+`observed_date_count: 0`、`source rowなし`と表示します。
+
+### 5. 作成済みデータを検証する
 
 ```console
 itadaki-pipeline verify
@@ -149,7 +169,8 @@ Raw archiveから月次CSVを再計算して内容の一致を検証し、確認
 itadaki-pipeline verify --details
 ```
 
-`backfill`と`run`は、`--apply`を付けない限りファイルを変更しません。
+`backfill`、`ingest`、`build-weekly`は、`--apply`を付けない限りファイルを
+変更しません。
 
 ## 出力
 
@@ -170,6 +191,27 @@ itadaki-pipeline verify --details
 `DailyUsage`は`Key`、`MoC`、`MoM`、`Pow`の4系列を日単位で統合します。
 主な列は`key_count`、`mouse_clicks`、`moc_clicks`、`mouse_move_cm`、
 `power_on_sec`です。
+
+週次martは`weekly_mart_path`へ、UTF-8 BOM付きCSV、UTF-8 JSON、自己完結HTMLで
+出力します。Parquetや外部CDNは使用しません。
+
+```text
+<weekly-mart-path>/
+├── index.html
+├── weekly_history.csv
+├── manifest.json
+└── weeks/
+    └── 2026-W30/
+        ├── report.html
+        ├── weekly_summary.csv
+        ├── daily_activity.csv
+        ├── hourly_input.csv
+        ├── key_frequency.csv
+        └── manifest.json
+```
+
+HTMLは件数、分布、時系列、直前週との差分のみを中立に表示します。評価、推奨、
+改善案、良否判定は生成しません。論理キーはAutoHotkey変換後の値です。
 
 ## 安全性
 
@@ -242,12 +284,19 @@ Windows Task Schedulerへ毎週の処理を登録する補助スクリプトが�
 現在の登録スクリプトは、毎週日曜日の03:00に次のコマンドを実行します。
 
 ```text
-uv run --frozen itadaki-pipeline run --apply
+uv run --frozen itadaki-pipeline ingest --apply
 ```
 
 通常はユーザー単位の設定ファイルが自動的に読み込まれます。別の設定を固定する
 場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、スクリプトを
 再実行してください。
+
+週次martは取り込みとは別のTaskとして、たとえば次のactionを登録します。この
+リポジトリの補助スクリプトは、そのTaskを自動登録しません。
+
+```text
+uv run --frozen itadaki-pipeline build-weekly --apply
+```
 
 ## 開発
 
@@ -269,7 +318,7 @@ Itadaki本体、大量の`.rec`、生成済みCSVは含めません。
 ├── tests/
 │   └── fixtures/
 ├── scripts/
-├── config.example.yaml
+├── .tkn/config.example.yaml
 ├── pyproject.toml
 └── uv.lock
 ```

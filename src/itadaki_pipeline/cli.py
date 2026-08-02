@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import public_config, resolve_config
 from .pipeline import run_pipeline, verify_config
+from .weekly import build_weekly
 
 LOG = logging.getLogger("itadaki_pipeline")
 
@@ -29,7 +30,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("plan", "backfill", "run", "verify"):
+    for command in ("plan", "backfill", "ingest", "run", "verify", "build-weekly"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument(
             "--config",
@@ -43,7 +44,7 @@ def _parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Include one result item per verified device-month.",
             )
-        if command in ("backfill", "run"):
+        if command in ("backfill", "ingest", "run", "build-weekly"):
             subparser.add_argument(
                 "--apply",
                 action="store_true",
@@ -122,6 +123,16 @@ def main(argv: list[str] | None = None) -> int:
         explicit_config = getattr(args, "command_config", None) or args.config
         resolved = resolve_config(explicit_config=explicit_config)
         config = resolved.config
+        if args.command == "run":
+            print(
+                "WARNING: 'run' is deprecated; use 'ingest' instead.",
+                file=sys.stderr,
+            )
+        if any(source.legacy_run_mode for source in config.sources):
+            print(
+                "WARNING: config mode 'run' is deprecated; use 'ingest' instead.",
+                file=sys.stderr,
+            )
         if args.command == "config":
             print(
                 json.dumps(
@@ -147,7 +158,20 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(totals, ensure_ascii=False, indent=2))
             return 0
 
-        mode = "backfill" if args.command in ("plan", "backfill") else "run"
+        if args.command == "build-weekly":
+            apply = bool(args.apply)
+            log_path = None
+            if apply:
+                log_path = _configure_file_log(config.log_dir, args.command)
+                LOG.info("Starting %s with %s", args.command, config.config_path)
+            payload = build_weekly(config, apply=apply)
+            if log_path:
+                payload["log_path"] = str(log_path)
+                LOG.info("Completed %s", args.command)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+
+        mode = "backfill" if args.command in ("plan", "backfill") else "ingest"
         apply = bool(getattr(args, "apply", False)) and args.command != "plan"
         log_path = None
         if apply:

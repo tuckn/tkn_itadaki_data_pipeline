@@ -200,12 +200,16 @@ def plans_for_mode(
     *,
     now: dt.datetime | None = None,
 ) -> list[SourcePlan]:
+    canonical_mode = "ingest" if mode == "run" else mode
     local_now = now or dt.datetime.now(config.timezone)
     cutoff = local_now.astimezone(config.timezone).date() - dt.timedelta(days=1)
     return [
         discover_source(source, cutoff)
         for source in config.sources
-        if mode in source.modes
+        if canonical_mode in tuple(
+            "ingest" if source_mode == "run" else source_mode
+            for source_mode in source.modes
+        )
     ]
 
 
@@ -510,7 +514,47 @@ def process_source(
     now: dt.datetime | None = None,
 ) -> SourceRunResult:
     source = plan.source
+    canonical_mode = "ingest" if mode == "run" else mode
+    local_now = (now or dt.datetime.now(config.timezone)).astimezone(config.timezone)
+    batch_id = (
+        local_now.strftime("%Y%m%dT%H%M%S%z")
+        + f"_{canonical_mode}_{source.name.replace(' ', '-')}"
+    )
+    manifest_path = (
+        source.archive_root
+        / "_manifests"
+        / f"{local_now.year:04d}"
+        / f"{local_now.month:02d}"
+        / f"{batch_id}.json"
+    )
     if not plan.dates:
+        payload = {
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "status": "complete",
+            "mode": canonical_mode,
+            "started_at": local_now.isoformat(timespec="seconds"),
+            "completed_at": dt.datetime.now(config.timezone).isoformat(
+                timespec="seconds"
+            ),
+            "timezone": config.timezone_name,
+            "source_name": source.name,
+            "device_id": source.device_id,
+            "cutoff_date": plan.cutoff_date.isoformat(),
+            "date_range": None,
+            "date_count": 0,
+            "files": [],
+            "outputs": [],
+            "warnings": [],
+            "total_ini": _total_ini_snapshot(source),
+            "cleanup": {
+                "requested": source.delete_after_success,
+                "status": "not-needed",
+                "deleted_files": 0,
+                "errors": [],
+            },
+        }
+        _write_json_atomic(manifest_path, payload)
         return SourceRunResult(
             source_name=source.name,
             device_id=source.device_id,
@@ -519,15 +563,9 @@ def process_source(
             output_updates=0,
             output_unchanged=0,
             deleted_files=0,
-            manifest_path=None,
+            manifest_path=manifest_path,
             warnings=(),
         )
-
-    local_now = (now or dt.datetime.now(config.timezone)).astimezone(config.timezone)
-    batch_id = (
-        local_now.strftime("%Y%m%dT%H%M%S%z")
-        + f"_{mode}_{source.name.replace(' ', '-')}"
-    )
     file_records: list[dict] = []
     copied_files = 0
     for record_date in plan.dates:
@@ -579,18 +617,11 @@ def process_source(
         warnings.extend(month_warnings)
     warnings = list(dict.fromkeys(warnings))
 
-    manifest_path = (
-        source.archive_root
-        / "_manifests"
-        / f"{local_now.year:04d}"
-        / f"{local_now.month:02d}"
-        / f"{batch_id}.json"
-    )
     payload = {
         "schema_version": 1,
         "batch_id": batch_id,
         "status": "complete",
-        "mode": mode,
+        "mode": canonical_mode,
         "started_at": local_now.isoformat(timespec="seconds"),
         "completed_at": dt.datetime.now(config.timezone).isoformat(timespec="seconds"),
         "timezone": config.timezone_name,
@@ -676,11 +707,12 @@ def run_pipeline(
     apply: bool,
     now: dt.datetime | None = None,
 ) -> tuple[list[SourcePlan], list[SourceRunResult]]:
-    plans = plans_for_mode(config, mode, now=now)
+    canonical_mode = "ingest" if mode == "run" else mode
+    plans = plans_for_mode(config, canonical_mode, now=now)
     if not apply:
         return plans, []
     return plans, [
-        process_source(config, plan, mode=mode, now=now) for plan in plans
+        process_source(config, plan, mode=canonical_mode, now=now) for plan in plans
     ]
 
 

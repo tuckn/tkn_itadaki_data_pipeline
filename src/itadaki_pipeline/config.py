@@ -20,6 +20,7 @@ class SourceConfig:
     archive_root: Path
     modes: tuple[str, ...]
     delete_after_success: bool
+    legacy_run_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class PipelineConfig:
     processed_data_root: Path
     log_dir: Path
     sources: tuple[SourceConfig, ...]
+    weekly_mart_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,7 @@ def _build_config(
         {
             "timezone",
             "processed_data_path",
+            "weekly_mart_path",
             "log_path",
             "sources",
         },
@@ -134,10 +137,14 @@ def _build_config(
         if name in names:
             raise ValueError(f"Duplicate source name: {name}")
         names.add(name)
-        modes = tuple(str(mode) for mode in item.get("modes", ["backfill", "run"]))
-        unsupported = set(modes) - {"backfill", "run"}
+        raw_modes = tuple(
+            str(mode) for mode in item.get("modes", ["backfill", "ingest"])
+        )
+        unsupported = set(raw_modes) - {"backfill", "ingest", "run"}
         if unsupported:
             raise ValueError(f"{name}: unsupported modes: {sorted(unsupported)}")
+        legacy_run_mode = "run" in raw_modes
+        modes = tuple(dict.fromkeys("ingest" if mode == "run" else mode for mode in raw_modes))
 
         source_path = item.get("source_path")
         destination_path = item.get("destination_path")
@@ -154,8 +161,11 @@ def _build_config(
                 archive_root=_path(str(destination_path), cwd),
                 modes=modes,
                 delete_after_success=bool(item.get("delete_after_success", False)),
+                legacy_run_mode=legacy_run_mode,
             )
         )
+
+    weekly_mart_value = raw.get("weekly_mart_path")
 
     return PipelineConfig(
         config_path=config_path,
@@ -167,6 +177,9 @@ def _build_config(
             cwd,
         ),
         sources=tuple(sources),
+        weekly_mart_root=(
+            _path(str(weekly_mart_value), cwd) if weekly_mart_value else None
+        ),
     )
 
 
@@ -214,6 +227,9 @@ def public_config(
     return {
         "timezone": config.timezone_name,
         "processed_data_path": str(config.processed_data_root),
+        "weekly_mart_path": (
+            str(config.weekly_mart_root) if config.weekly_mart_root else None
+        ),
         "log_path": str(config.log_dir),
         "storage": {
             "app_root": str(storage.app_root),

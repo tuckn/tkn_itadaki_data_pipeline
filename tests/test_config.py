@@ -19,6 +19,7 @@ def test_config_precedence_and_cwd_relative_paths(
             [
                 "timezone: Asia/Tokyo",
                 "processed_data_path: global-processed-data",
+                "weekly_mart_path: global-weekly-mart",
                 "sources:",
                 "  - name: global",
                 "    device_id: Global PC",
@@ -56,6 +57,7 @@ def test_config_precedence_and_cwd_relative_paths(
     resolved = resolve_config(cwd=tmp_path, explicit_config=explicit)
 
     assert resolved.config.processed_data_root == tmp_path / "cwd-processed-data"
+    assert resolved.config.weekly_mart_root == tmp_path / "global-weekly-mart"
     assert resolved.config.sources[0].rec_dir == tmp_path / "source"
     assert resolved.config.sources[0].archive_root == tmp_path / "destination"
     assert resolved.sources == (
@@ -64,6 +66,33 @@ def test_config_precedence_and_cwd_relative_paths(
         str(explicit),
     )
     assert resolved.paths == user_paths()
+
+
+def test_legacy_run_mode_is_normalized(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.global_config_path",
+        lambda: tmp_path / "missing-global.yaml",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "processed_data_path: processed-data",
+                "sources:",
+                "  - name: current",
+                "    device_id: Example PC",
+                "    source_path: source",
+                "    destination_path: destination",
+                "    modes: [backfill, run]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_config(cwd=tmp_path, explicit_config=config)
+
+    assert resolved.config.sources[0].modes == ("backfill", "ingest")
+    assert resolved.config.sources[0].legacy_run_mode is True
 
 
 def test_non_yaml_config_is_rejected(tmp_path: Path, monkeypatch) -> None:

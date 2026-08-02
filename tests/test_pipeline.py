@@ -133,7 +133,12 @@ class PipelineTests(unittest.TestCase):
             self.config, "run", apply=True, now=self.now
         )
         self.assertEqual(0, len(plans[0].dates))
-        self.assertIsNone(results[0].manifest_path)
+        self.assertTrue(
+            results[0].manifest_path and results[0].manifest_path.exists()
+        )
+        manifest = results[0].manifest_path.read_text(encoding="utf-8")
+        self.assertIn('"status": "complete"', manifest)
+        self.assertIn('"cutoff_date": "2026-04-04"', manifest)
 
     def test_preserved_source_rerun_does_not_rewrite_outputs(self) -> None:
         preserved = SourceConfig(

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itadaki-pipeline"
-version = "0.1.0"
-description = "Archive Itadaki records and build verified monthly processed datasets."
+version = "0.2.0"
+description = "Archive Itadaki records and build neutral weekly activity marts."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

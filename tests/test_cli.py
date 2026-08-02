@@ -1,7 +1,10 @@
+import datetime as dt
 import json
 from pathlib import Path
 
 from itadaki_pipeline.cli import _parser, main
+from itadaki_pipeline.config import PipelineConfig, ResolvedConfig, SourceConfig
+from itadaki_pipeline.paths import user_paths
 
 
 def test_config_option_is_accepted_before_or_after_pipeline_command() -> None:
@@ -12,6 +15,15 @@ def test_config_option_is_accepted_before_or_after_pipeline_command() -> None:
     assert before.command_config is None
     assert after.config is None
     assert after.command_config == Path("after.yaml")
+
+    weekly_before = _parser().parse_args(
+        ["--config", "before.yaml", "build-weekly"]
+    )
+    weekly_after = _parser().parse_args(
+        ["build-weekly", "--config", "after.yaml"]
+    )
+    assert weekly_before.config == Path("before.yaml")
+    assert weekly_after.command_config == Path("after.yaml")
 
 
 def test_config_show_command() -> None:
@@ -52,3 +64,45 @@ def test_config_show_emits_processed_data_path(
         tmp_path / "processed-data"
     )
     assert "bronze_path" not in payload["values"]
+
+
+def test_run_alias_warns_and_calls_canonical_ingest(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    source = SourceConfig(
+        name="current",
+        device_id="Example PC",
+        rec_dir=tmp_path / "source",
+        archive_root=tmp_path / "archive",
+        modes=("ingest",),
+        delete_after_success=False,
+    )
+    config = PipelineConfig(
+        config_path=tmp_path / "config.yaml",
+        timezone_name="Asia/Tokyo",
+        timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
+        processed_data_root=tmp_path / "processed",
+        log_dir=tmp_path / "logs",
+        sources=(source,),
+    )
+    resolved = ResolvedConfig(
+        config=config,
+        sources=(str(config.config_path),),
+        paths=user_paths(),
+    )
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr("itadaki_pipeline.cli.resolve_config", lambda **_: resolved)
+
+    def fake_run(config, mode, *, apply):
+        called.update(mode=mode, apply=apply)
+        return [], []
+
+    monkeypatch.setattr("itadaki_pipeline.cli.run_pipeline", fake_run)
+
+    assert main(["run"]) == 0
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err
+    assert called == {"mode": "ingest", "apply": False}
