@@ -219,14 +219,30 @@ def test_build_weekly_apply_quality_contract_and_idempotency(tmp_path: Path) -> 
     assert "データ品質" in report and "<table" in report
     assert "#ff0000" not in report and "#00ff00" not in report
     assert all(word not in report for word in ("評価", "推奨", "改善案", "良好", "不良"))
+    assert '>日付</text>' in report
+    assert '>event数</text>' in report
+    assert '>時刻</text>' in report
+    assert '>曜日</text>' in report
+    assert '>論理キー</text>' in report
     index = (config.weekly_mart_root / "index.html").read_text(encoding="utf-8")
     assert 'href="weeks/2026-W14/report.html"' in index
-    assert all(word not in report for word in ("評価", "推奨", "改善案", "良好", "不良"))
-    index = (config.weekly_mart_root / "index.html").read_text(encoding="utf-8")
-    assert 'href="weeks/2026-W14/report.html"' in index
-    assert all(word not in report for word in ("評価", "推奨", "改善案", "良好", "不良"))
-    index = (config.weekly_mart_root / "index.html").read_text(encoding="utf-8")
-    assert 'href="weeks/2026-W14/report.html"' in index
+    assert 'href="months/2026-04/report.html"' in index
+    assert 'href="years/2026/report.html"' in index
+    assert '>ISO週</text>' in index
+    assert '>event数</text>' in index
+
+    month_report = (
+        config.weekly_mart_root / "months" / "2026-04" / "report.html"
+    ).read_text(encoding="utf-8")
+    year_report = (
+        config.weekly_mart_root / "years" / "2026" / "report.html"
+    ).read_text(encoding="utf-8")
+    assert "2026-04 Itadaki月次活動" in month_report
+    assert '>日付</text>' in month_report and '>時刻</text>' in month_report
+    assert "2026 Itadaki年次活動" in year_report
+    assert '>月</text>' in year_report and '>時刻</text>' in year_report
+    assert applied["index"]["month_report_count"] == 1
+    assert applied["index"]["year_report_count"] == 1
 
     empty_summary = _read_csv(
         config.weekly_mart_root / "weeks" / "2026-W15" / "weekly_summary.csv"
@@ -243,31 +259,12 @@ def test_build_weekly_apply_quality_contract_and_idempotency(tmp_path: Path) -> 
     assert second["index"]["index_changed"] is False
     assert second["index"]["history_changed"] is False
     assert second["index"]["manifest_changed"] is False
+    assert second["index"]["calendar_reports_changed"] == 0
 
     (week / "report.html").write_text("broken", encoding="utf-8")
     repair = build_weekly(config, apply=False)
     assert repair["stale_week_count"] == 1
     assert repair["weeks_to_generate"][0]["reason"] == "output missing or hash mismatch"
-
-    build_weekly(config, apply=True)
-    input_path = config.processed_data_root / "PC-A" / "InputEvents" / "2026" / "04.csv"
-    with input_path.open("a", encoding="utf-8", newline="") as handle:
-        handle.write("\n")
-    stale_month = build_weekly(config, apply=False)
-    assert stale_month["stale_week_count"] == 2
-    assert {item["reason"] for item in stale_month["weeks_to_generate"]} == {
-        "input fingerprint changed"
-    }
-
-    build_weekly(config, apply=True)
-    input_path = config.processed_data_root / "PC-A" / "InputEvents" / "2026" / "04.csv"
-    with input_path.open("a", encoding="utf-8", newline="") as handle:
-        handle.write("\n")
-    stale_month = build_weekly(config, apply=False)
-    assert stale_month["stale_week_count"] == 2
-    assert {item["reason"] for item in stale_month["weeks_to_generate"]} == {
-        "input fingerprint changed"
-    }
 
     build_weekly(config, apply=True)
     input_path = config.processed_data_root / "PC-A" / "InputEvents" / "2026" / "04.csv"
@@ -288,3 +285,27 @@ def test_missing_watermark_stops_before_mart_write(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="ingest --apply"):
         build_weekly(config, apply=True)
     assert not config.weekly_mart_root.exists()
+
+
+def test_build_weekly_reports_progress(tmp_path: Path) -> None:
+    messages: list[str] = []
+
+    build_weekly(_config(tmp_path), apply=True, progress=messages.append)
+
+    assert messages[0] == "Reading ingest watermark"
+    assert any(message.startswith("Weekly reports 1/2") for message in messages)
+    assert any(message.startswith("Calendar reports 1/2") for message in messages)
+
+
+def test_generator_version_change_marks_week_stale(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    build_weekly(config, apply=True)
+    manifest_path = config.weekly_mart_root / "weeks" / "2026-W14" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["generator_version"] = "0.2.0"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    plan = build_weekly(config, apply=False)
+
+    stale = next(item for item in plan["weeks_to_generate"] if item["week_id"] == "2026-W14")
+    assert stale["reason"] == "generator version changed"

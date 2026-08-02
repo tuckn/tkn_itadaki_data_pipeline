@@ -156,6 +156,11 @@ itadaki-pipeline build-weekly --apply
 不一致がある完全週だけを再生成します。記録のない週も出力し、活動0とは解釈せず
 `observed_date_count: 0`、`source rowなし`と表示します。
 
+`--apply`では処理状況をコンソールへ順次表示し、終了時に対象週数、生成週数、
+月次・年次レポート数、mart pathを要約します。入力fingerprintや週ごとの詳細を
+含むJSON結果はコンソールへ展開せず、終了時に表示する`Result JSON`のパスへ
+保存します。テキストログのパスも`Log`として表示します。
+
 ### 5. 作成済みデータを検証する
 
 ```console
@@ -192,14 +197,21 @@ itadaki-pipeline verify --details
 主な列は`key_count`、`mouse_clicks`、`moc_clicks`、`mouse_move_cm`、
 `power_on_sec`です。
 
-週次martは`weekly_mart_path`へ、UTF-8 BOM付きCSV、UTF-8 JSON、自己完結HTMLで
-出力します。Parquetや外部CDNは使用しません。
+活動martは`weekly_mart_path`へ、UTF-8 BOM付きCSV、UTF-8 JSON、自己完結HTMLで
+出力します。Parquetや外部CDNは使用しません。週次レポートに加え、カレンダー月・
+年ごとの集計とヒートマップも生成します。
 
 ```text
 <weekly-mart-path>/
 ├── index.html
 ├── weekly_history.csv
 ├── manifest.json
+├── months/
+│   └── 2026-07/
+│       └── report.html
+├── years/
+│   └── 2026/
+│       └── report.html
 └── weeks/
     └── 2026-W30/
         ├── report.html
@@ -211,7 +223,8 @@ itadaki-pipeline verify --details
 ```
 
 HTMLは件数、分布、時系列、直前週との差分のみを中立に表示します。評価、推奨、
-改善案、良否判定は生成しません。論理キーはAutoHotkey変換後の値です。
+改善案、良否判定は生成しません。棒グラフ、時系列、ヒートマップには軸名を表示し、
+各グラフに同じ値を確認できる表を付けます。論理キーはAutoHotkey変換後の値です。
 
 ## 安全性
 

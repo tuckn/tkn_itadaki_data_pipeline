@@ -6,7 +6,9 @@ import argparse
 import datetime as dt
 import json
 import logging
+import os
 import sys
+import uuid
 from pathlib import Path
 
 from .config import public_config, resolve_config
@@ -64,13 +66,36 @@ def _parser() -> argparse.ArgumentParser:
 
 def _configure_file_log(log_dir: Path, command: str) -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
+    timestamp = dt.datetime.now().strftime("%Y%m%dT%H%M%S%f")
     path = log_dir / f"{timestamp}_{command}.log"
+    for existing in list(LOG.handlers):
+        if isinstance(existing, logging.FileHandler):
+            existing.close()
+            LOG.removeHandler(existing)
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     LOG.setLevel(logging.INFO)
     LOG.addHandler(handler)
     return path
+
+
+def _write_result_json(log_path: Path, payload: dict) -> Path:
+    path = log_path.with_name(f"{log_path.stem}_result.json")
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def _progress(message: str) -> None:
+    LOG.info(message)
+    print(f"[INFO] {message}", file=sys.stderr)
 
 
 def _print_plans(plans: object) -> None:
@@ -125,12 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         config = resolved.config
         if args.command == "run":
             print(
-                "WARNING: 'run' is deprecated; use 'ingest' instead.",
+                "[WARNING] 'run' is deprecated; use 'ingest' instead.",
                 file=sys.stderr,
             )
         if any(source.legacy_run_mode for source in config.sources):
             print(
-                "WARNING: config mode 'run' is deprecated; use 'ingest' instead.",
+                "[WARNING] config mode 'run' is deprecated; use 'ingest' instead.",
                 file=sys.stderr,
             )
         if args.command == "config":
@@ -160,15 +185,33 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "build-weekly":
             apply = bool(args.apply)
-            log_path = None
-            if apply:
-                log_path = _configure_file_log(config.log_dir, args.command)
-                LOG.info("Starting %s with %s", args.command, config.config_path)
-            payload = build_weekly(config, apply=apply)
-            if log_path:
-                payload["log_path"] = str(log_path)
-                LOG.info("Completed %s", args.command)
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            log_path = _configure_file_log(config.log_dir, args.command)
+            _progress(
+                f"Starting build-weekly ({'apply' if apply else 'dry-run'})"
+            )
+            payload = build_weekly(config, apply=apply, progress=_progress)
+            payload["log_path"] = str(log_path)
+            result_path = _write_result_json(log_path, payload)
+            LOG.info("Result JSON: %s", result_path)
+            LOG.info("Completed build-weekly")
+            print(
+                f"[SUCCESS] build-weekly "
+                f"{'completed' if apply else 'dry-run completed'}."
+            )
+            print(f"[INFO] Mart: {payload['mart_path']}")
+            print(
+                f"[INFO] Weeks: {payload['candidate_week_count']} candidate, "
+                f"{len(payload['generated_weeks'])} generated, "
+                f"{payload['unchanged_week_count']} unchanged, "
+                f"{payload['stale_week_count']} stale."
+            )
+            print(
+                f"[INFO] Calendar reports: "
+                f"{payload['index']['month_report_count']} monthly, "
+                f"{payload['index']['year_report_count']} yearly."
+            )
+            print(f"[INFO] Result JSON: {result_path}")
+            print(f"[INFO] Log: {log_path}")
             return 0
 
         mode = "backfill" if args.command in ("plan", "backfill") else "ingest"

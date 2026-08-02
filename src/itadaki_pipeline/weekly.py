@@ -13,6 +13,7 @@ import json
 import os
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from typing import Any
 from .config import PipelineConfig, SourceConfig
 from .pipeline import sha256_file
 
-GENERATOR_VERSION = "0.2.0"
+GENERATOR_VERSION = "0.3.0"
 MANIFEST_SCHEMA_VERSION = 1
 ALL_DEVICES = "all_devices"
 
@@ -88,6 +89,14 @@ class Week:
     week_id: str
     start: dt.date
     end: dt.date
+
+
+@dataclass(frozen=True)
+class CalendarPeriod:
+    period_id: str
+    start: dt.date
+    end: dt.date
+    grain: str
 
 
 @dataclass(frozen=True)
@@ -294,6 +303,8 @@ def _plan_week(
     manifest = _read_json(directory / "manifest.json")
     if manifest is None:
         return WeekPlan(week, "missing", "missing manifest", files, fingerprints)
+    if manifest.get("generator_version") != GENERATOR_VERSION:
+        return WeekPlan(week, "stale", "generator version changed", files, fingerprints)
     if manifest.get("input_fingerprints") != list(fingerprints):
         return WeekPlan(week, "stale", "input fingerprint changed", files, fingerprints)
     if not _outputs_match(directory, manifest):
@@ -509,64 +520,200 @@ def _table(headers: list[str], rows: list[list[Any]], *, css_class: str = "") ->
     return f'<div class="table-wrap"><table class="{css_class}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
-def _bar_chart(labels: list[str], series: list[tuple[str, list[float]]]) -> str:
+def _tick_positions(length: int, maximum: int = 10) -> set[int]:
+    if length <= maximum:
+        return set(range(length))
+    step = max(1, (length - 1) // (maximum - 1))
+    return {*range(0, length, step), length - 1}
+
+
+def _bar_chart(
+    labels: list[str],
+    series: list[tuple[str, list[float]]],
+    *,
+    x_label: str,
+    y_label: str,
+) -> str:
     maximum = max((value for _, values in series for value in values), default=0) or 1
     colors = ["#356a9a", "#8ba6bf"]
-    width, height = 720, 220
-    group = width / max(len(labels), 1)
-    bars: list[str] = []
-    for index, (_, values) in enumerate(series):
-        bar_width = group * 0.7 / max(len(series), 1)
+    width, height = 760, 280
+    left, right, top, bottom = 72, 18, 34, 62
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    group = plot_width / max(len(labels), 1)
+    marks: list[str] = []
+    for index, (name, values) in enumerate(series):
+        bar_width = group * 0.72 / max(len(series), 1)
         for position, value in enumerate(values):
-            bar_height = value / maximum * 170
-            x = position * group + group * 0.15 + index * bar_width
-            y = 185 - bar_height
-            bars.append(
+            bar_height = value / maximum * plot_height
+            x = left + position * group + group * 0.14 + index * bar_width
+            y = top + plot_height - bar_height
+            marks.append(
                 f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" '
-                f'height="{bar_height:.1f}" fill="{colors[index % len(colors)]}"><title>{html.escape(labels[position])}: {value:g}</title></rect>'
+                f'height="{bar_height:.1f}" fill="{colors[index % len(colors)]}">'
+                f'<title>{html.escape(name)} / {html.escape(labels[position])}: {value:g}</title></rect>'
             )
-    ticks = "".join(
-        f'<text x="{position * group + group / 2:.1f}" y="207" text-anchor="middle">{html.escape(label)}</text>'
+    guides: list[str] = []
+    for index in range(5):
+        value = maximum * index / 4
+        y = top + plot_height - plot_height * index / 4
+        guides.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width-right}" y2="{y:.1f}" class="grid"/>'
+            f'<text x="{left-8}" y="{y+4:.1f}" text-anchor="end">{value:g}</text>'
+        )
+    x_ticks = "".join(
+        f'<text x="{left + position * group + group / 2:.1f}" y="{height-bottom+20}" '
+        f'text-anchor="middle">{html.escape(label)}</text>'
         for position, label in enumerate(labels)
+        if position in _tick_positions(len(labels))
     )
-    return f'<svg role="img" viewBox="0 0 {width} {height}" aria-label="棒グラフ">{"".join(bars)}{ticks}</svg>'
+    legend = "".join(
+        f'<rect x="{left + index * 130}" y="8" width="12" height="12" fill="{colors[index]}"/>'
+        f'<text x="{left + index * 130 + 18}" y="18">{html.escape(name)}</text>'
+        for index, (name, _) in enumerate(series)
+    )
+    return (
+        f'<svg role="img" viewBox="0 0 {width} {height}" aria-label="{html.escape(y_label)}の棒グラフ">'
+        f'{legend}{"".join(guides)}<line x1="{left}" y1="{top}" x2="{left}" y2="{top+plot_height}" class="axis"/>'
+        f'<line x1="{left}" y1="{top+plot_height}" x2="{width-right}" y2="{top+plot_height}" class="axis"/>'
+        f'{"".join(marks)}{x_ticks}'
+        f'<text class="axis-title" x="{left+plot_width/2:.1f}" y="{height-8}" text-anchor="middle">{html.escape(x_label)}</text>'
+        f'<text class="axis-title" transform="translate(17 {top+plot_height/2:.1f}) rotate(-90)" text-anchor="middle">{html.escape(y_label)}</text>'
+        "</svg>"
+    )
 
 
-def _line_chart(labels: list[str], series: list[tuple[str, list[float]]]) -> str:
+def _horizontal_bar_chart(
+    labels: list[str],
+    values: list[float],
+    *,
+    x_label: str,
+    y_label: str,
+) -> str:
+    maximum = max(values, default=0) or 1
+    width = 760
+    left, right, top, bottom = 150, 30, 20, 48
+    row_height = 24
+    plot_height = max(len(labels), 1) * row_height
+    height = top + plot_height + bottom
+    plot_width = width - left - right
+    bars: list[str] = []
+    for index, (label, value) in enumerate(zip(labels, values, strict=True)):
+        y = top + index * row_height + 3
+        bar_width = value / maximum * plot_width
+        bars.append(
+            f'<text x="{left-8}" y="{y+13}" text-anchor="end">{html.escape(label)}</text>'
+            f'<rect x="{left}" y="{y}" width="{bar_width:.1f}" height="17" fill="#356a9a">'
+            f'<title>{html.escape(label)}: {value:g}</title></rect>'
+        )
+    return (
+        f'<svg role="img" viewBox="0 0 {width} {height}" aria-label="{html.escape(x_label)}の横棒グラフ">'
+        f'<line x1="{left}" y1="{top+plot_height}" x2="{width-right}" y2="{top+plot_height}" class="axis"/>'
+        f'{"".join(bars)}'
+        f'<text class="axis-title" x="{left+plot_width/2:.1f}" y="{height-8}" text-anchor="middle">{html.escape(x_label)}</text>'
+        f'<text class="axis-title" transform="translate(18 {top+plot_height/2:.1f}) rotate(-90)" text-anchor="middle">{html.escape(y_label)}</text>'
+        "</svg>"
+    )
+
+
+def _line_chart(
+    labels: list[str],
+    series: list[tuple[str, list[float]]],
+    *,
+    x_label: str,
+    y_label: str,
+) -> str:
     maximum = max((value for _, values in series for value in values), default=0) or 1
     colors = ["#356a9a", "#8ba6bf"]
-    width, height = 720, 220
-    step = width / max(len(labels) - 1, 1)
+    width, height = 760, 300
+    left, right, top, bottom = 72, 18, 34, 64
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    step = plot_width / max(len(labels) - 1, 1)
     lines: list[str] = []
     for index, (name, values) in enumerate(series):
         points = " ".join(
-            f"{position * step:.1f},{190 - value / maximum * 170:.1f}"
+            f"{left + position * step:.1f},{top + plot_height - value / maximum * plot_height:.1f}"
             for position, value in enumerate(values)
         )
         lines.append(
             f'<polyline points="{points}" fill="none" stroke="{colors[index]}" '
             f'stroke-width="2"><title>{html.escape(name)}</title></polyline>'
         )
+    guides: list[str] = []
+    for index in range(5):
+        value = maximum * index / 4
+        y = top + plot_height - plot_height * index / 4
+        guides.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width-right}" y2="{y:.1f}" class="grid"/>'
+            f'<text x="{left-8}" y="{y+4:.1f}" text-anchor="end">{value:g}</text>'
+        )
+    x_ticks = "".join(
+        f'<text x="{left + position * step:.1f}" y="{height-bottom+20}" text-anchor="middle">{html.escape(label)}</text>'
+        for position, label in enumerate(labels)
+        if position in _tick_positions(len(labels))
+    )
+    legend = "".join(
+        f'<line x1="{left + index * 130}" y1="14" x2="{left + index * 130 + 14}" y2="14" stroke="{colors[index]}" stroke-width="3"/>'
+        f'<text x="{left + index * 130 + 20}" y="18">{html.escape(name)}</text>'
+        for index, (name, _) in enumerate(series)
+    )
     return (
-        f'<svg role="img" viewBox="0 0 {width} {height}" '
-        f'aria-label="週次時系列">{"".join(lines)}</svg>'
+        f'<svg role="img" viewBox="0 0 {width} {height}" aria-label="{html.escape(y_label)}の時系列">'
+        f'{legend}{"".join(guides)}<line x1="{left}" y1="{top}" x2="{left}" y2="{top+plot_height}" class="axis"/>'
+        f'<line x1="{left}" y1="{top+plot_height}" x2="{width-right}" y2="{top+plot_height}" class="axis"/>'
+        f'{"".join(lines)}{x_ticks}'
+        f'<text class="axis-title" x="{left+plot_width/2:.1f}" y="{height-8}" text-anchor="middle">{html.escape(x_label)}</text>'
+        f'<text class="axis-title" transform="translate(17 {top+plot_height/2:.1f}) rotate(-90)" text-anchor="middle">{html.escape(y_label)}</text>'
+        "</svg>"
     )
 
 
-def _heatmap(rows: list[list[Any]], value_index: int, label: str) -> str:
-    values = [int(row[value_index]) for row in rows]
+def _heatmap(
+    matrix: list[list[int]],
+    row_labels: list[str],
+    *,
+    label: str,
+    x_label: str,
+    y_label: str,
+) -> str:
+    values = [value for row in matrix for value in row]
     maximum = max(values, default=0) or 1
+    width = 760
+    left, right, top, bottom = 105, 25, 28, 58
+    cell_width = (width - left - right) / 24
+    cell_height = 25 if len(matrix) <= 12 else 18
+    plot_height = max(len(matrix), 1) * cell_height
+    height = top + plot_height + bottom
     cells: list[str] = []
-    for index, row in enumerate(rows):
-        day = index // 24
-        hour = index % 24
-        value = int(row[value_index])
-        opacity = 0.08 + 0.82 * value / maximum
-        cells.append(
-            f'<rect x="{hour * 25}" y="{day * 25}" width="23" height="23" '
-            f'fill="#356a9a" fill-opacity="{opacity:.3f}"><title>{row[1]} {hour:02d}:00: {value}</title></rect>'
-        )
-    return f'<svg role="img" viewBox="0 0 600 175" aria-label="{html.escape(label)}">{"".join(cells)}</svg>'
+    for row_index, row in enumerate(matrix):
+        for hour, value in enumerate(row):
+            opacity = 0.08 + 0.82 * value / maximum
+            cells.append(
+                f'<rect x="{left + hour * cell_width:.1f}" y="{top + row_index * cell_height:.1f}" '
+                f'width="{cell_width-1:.1f}" height="{cell_height-1:.1f}" fill="#356a9a" '
+                f'fill-opacity="{opacity:.3f}"><title>{html.escape(row_labels[row_index])} '
+                f'{hour:02d}:00: {value}</title></rect>'
+            )
+    row_ticks = "".join(
+        f'<text x="{left-7}" y="{top + index * cell_height + cell_height * 0.68:.1f}" '
+        f'text-anchor="end">{html.escape(row_label)}</text>'
+        for index, row_label in enumerate(row_labels)
+        if index in _tick_positions(len(row_labels), maximum=12)
+    )
+    hour_ticks = "".join(
+        f'<text x="{left + hour * cell_width + cell_width / 2:.1f}" y="{top+plot_height+18:.1f}" '
+        f'text-anchor="middle">{hour:02d}</text>'
+        for hour in range(0, 24, 3)
+    )
+    return (
+        f'<svg role="img" viewBox="0 0 {width} {height}" aria-label="{html.escape(label)}">'
+        f'{"".join(cells)}{row_ticks}{hour_ticks}'
+        f'<text x="{width-right}" y="17" text-anchor="end">濃淡: 0 ～ {maximum}</text>'
+        f'<text class="axis-title" x="{left+(width-left-right)/2:.1f}" y="{height-8}" text-anchor="middle">{html.escape(x_label)}</text>'
+        f'<text class="axis-title" transform="translate(18 {top+plot_height/2:.1f}) rotate(-90)" text-anchor="middle">{html.escape(y_label)}</text>'
+        "</svg>"
+    )
 
 
 def _styles() -> str:
@@ -575,10 +722,17 @@ def _styles() -> str:
 *{box-sizing:border-box}body{margin:0;color:var(--ink);font:15px/1.55 system-ui,sans-serif;background:#f7f9fb}
 main{max-width:1120px;margin:auto;padding:24px}h1,h2{line-height:1.25}h2{margin-top:36px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .meta,.note{color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card{background:white;border:1px solid var(--line);padding:12px;border-radius:8px}.value{font-size:1.35rem;font-variant-numeric:tabular-nums}
-.chart{background:white;border:1px solid var(--line);padding:12px;margin:12px 0;border-radius:8px}svg{display:block;width:100%;height:auto}svg text{font-size:11px;fill:var(--muted)}
+.chart{background:white;border:1px solid var(--line);padding:12px;margin:12px 0;border-radius:8px}svg{display:block;width:100%;height:auto}svg text{font-size:11px;fill:var(--muted)}svg .axis{stroke:#607384;stroke-width:1}svg .grid{stroke:#dce4ea;stroke-width:1}svg .axis-title{font-size:13px;font-weight:600;fill:var(--ink)}
 .table-wrap{overflow:auto;margin:10px 0}table{width:100%;border-collapse:collapse;background:white;font-variant-numeric:tabular-nums}th,td{padding:7px 9px;border:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}th{background:var(--pale)}a{color:var(--blue)}
 @media(max-width:640px){main{padding:14px}.cards{grid-template-columns:repeat(2,1fr)}th,td{padding:6px}}
 """
+
+
+def _hourly_matrix(rows: list[list[Any]], value_index: int) -> list[list[int]]:
+    return [
+        [int(row[value_index]) for row in rows[offset : offset + 24]]
+        for offset in range(0, len(rows), 24)
+    ]
 
 
 def _weekly_html(week: Week, data: dict[str, Any]) -> str:
@@ -602,14 +756,19 @@ def _weekly_html(week: Week, data: dict[str, Any]) -> str:
     key_table = [[row[7], row[3], row[4], row[5], row[6]] for row in key_top]
     device_table = [row[4:] for row in summary if row[3] == "device"]
     quality_rows = [[name, value] for name, value in data["quality"].items()]
+    heatmap_labels = [
+        f'{row[1][5:]} {("月", "火", "水", "木", "金", "土", "日")[int(row[2]) - 1]}'
+        for row in daily
+    ]
     no_rows = '<p class="note">observed_date_count: 0（source rowなし）</p>' if all_summary[5] == 0 else ""
     return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{week.week_id} Itadaki週次活動</title><style>{_styles()}</style></head><body><main>
 <h1>{week.week_id} Itadaki週次活動</h1>
+<p><a href="../../index.html">活動mart索引へ戻る</a></p>
 <section><h2>期間とデータ範囲</h2><p>{week.start.isoformat()} ～ {week.end.isoformat()}（ISO週、月曜～日曜）</p>{no_rows}</section>
 <section><h2>週次集計</h2><div class="cards">{cards}</div></section>
-<section><h2>曜日別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[6]) for row in daily]), ("click", [float(row[7]) for row in daily])])}</div><div class="chart"><h3>mouse移動 / 電源オン</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[10]) for row in daily]), ("power_on_sec", [float(row[11]) for row in daily])])}</div>{_table(["日付","ISO曜日","record有無","keyboard","click","MoC","総event","移動cm","電源オン秒"], daily_table)}</section>
-<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(hourly, 6, "keyboard hour-of-week heatmap")}</div><div class="chart"><h3>click</h3>{_heatmap(hourly, 7, "click hour-of-week heatmap")}</div>{_table(["日付","時","keyboard","click","総event"], hourly_table)}</section>
-<section><h2>論理キー頻度</h2><div class="chart">{_bar_chart([str(row[4]) for row in key_top], [("count", [float(row[5]) for row in key_top])])}</div>{_table(["順位","code","name","件数","keyboard内構成比"], key_table)}</section>
+<section><h2>曜日別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[6]) for row in daily]), ("click", [float(row[7]) for row in daily])], x_label="日付", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[10]) for row in daily])], x_label="日付", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[11]) for row in daily])], x_label="日付", y_label="秒")}</div>{_table(["日付","ISO曜日","record有無","keyboard","click","MoC","総event","移動cm","電源オン秒"], daily_table)}</section>
+<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(_hourly_matrix(hourly, 6), heatmap_labels, label="keyboard hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div><div class="chart"><h3>click</h3>{_heatmap(_hourly_matrix(hourly, 7), heatmap_labels, label="click hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div>{_table(["日付","時","keyboard","click","総event"], hourly_table)}</section>
+<section><h2>論理キー頻度</h2><div class="chart">{_horizontal_bar_chart([str(row[4]) for row in key_top], [float(row[5]) for row in key_top], x_label="件数", y_label="論理キー")}</div>{_table(["順位","code","name","件数","keyboard内構成比"], key_table)}</section>
 <section><h2>端末別</h2>{_table(["device_id","観測日数","keyboard","click","MoC","総event","移動cm","電源オン秒"], device_table)}</section>
 <section><h2>データ品質</h2>{_table(["項目","件数"], quality_rows)}</section>
 </main></body></html>"""
@@ -696,26 +855,294 @@ def _history_rows(mart_root: Path, weeks: list[Week]) -> list[list[Any]]:
     return rows
 
 
-def _index_html(rows: list[list[Any]]) -> str:
+def _calendar_periods(first: dt.date, last: dt.date, grain: str) -> list[CalendarPeriod]:
+    periods: list[CalendarPeriod] = []
+    if first > last:
+        return periods
+    if grain == "month":
+        current = first.replace(day=1)
+        while current <= last:
+            next_start = (
+                dt.date(current.year + 1, 1, 1)
+                if current.month == 12
+                else dt.date(current.year, current.month + 1, 1)
+            )
+            periods.append(
+                CalendarPeriod(
+                    current.strftime("%Y-%m"),
+                    max(first, current),
+                    min(last, next_start - dt.timedelta(days=1)),
+                    grain,
+                )
+            )
+            current = next_start
+    elif grain == "year":
+        for year in range(first.year, last.year + 1):
+            periods.append(
+                CalendarPeriod(
+                    str(year),
+                    max(first, dt.date(year, 1, 1)),
+                    min(last, dt.date(year, 12, 31)),
+                    grain,
+                )
+            )
+    else:
+        raise ValueError(f"Unsupported calendar grain: {grain}")
+    return periods
+
+
+def _read_materialized_details(
+    mart_root: Path,
+    weeks: list[Week],
+) -> tuple[list[list[str]], list[list[str]]]:
+    daily_rows: list[list[str]] = []
+    hourly_rows: list[list[str]] = []
+    for week in weeks:
+        directory = mart_root / "weeks" / week.week_id
+        with (directory / "daily_activity.csv").open(
+            "r", encoding="utf-8-sig", newline=""
+        ) as handle:
+            daily_rows.extend(
+                row
+                for row in csv.reader(handle)
+                if row and row[0] != "week_id" and row[3] == "all_devices"
+            )
+        with (directory / "hourly_input.csv").open(
+            "r", encoding="utf-8-sig", newline=""
+        ) as handle:
+            hourly_rows.extend(
+                row
+                for row in csv.reader(handle)
+                if row and row[0] != "week_id" and row[4] == "all_devices"
+            )
+    daily_rows.sort(key=lambda row: row[1])
+    hourly_rows.sort(key=lambda row: (row[1], int(row[3])))
+    return daily_rows, hourly_rows
+
+
+def _period_rows(
+    period: CalendarPeriod,
+    daily_rows: list[list[str]],
+    hourly_rows: list[list[str]],
+) -> tuple[list[list[str]], list[list[str]]]:
+    daily = [
+        row
+        for row in daily_rows
+        if period.start <= dt.date.fromisoformat(row[1]) <= period.end
+    ]
+    hourly = [
+        row
+        for row in hourly_rows
+        if period.start <= dt.date.fromisoformat(row[1]) <= period.end
+    ]
+    return daily, hourly
+
+
+def _period_cards(daily: list[list[str]]) -> str:
+    values: list[int | float] = [
+        sum(int(row[5]) for row in daily),
+        sum(int(row[6]) for row in daily),
+        sum(int(row[7]) for row in daily),
+        sum(int(row[8]) for row in daily),
+        sum(int(row[9]) for row in daily),
+        sum(float(row[10]) for row in daily),
+        sum(int(row[11]) for row in daily),
+    ]
+    return "".join(
+        f'<div class="card"><div>{label}</div><div class="value">{html.escape(_format_float(value))}</div></div>'
+        for label, value in zip(
+            ["観測日数", "keyboard", "click", "MoC", "総event", "移動cm", "電源オン秒"],
+            values,
+            strict=True,
+        )
+    )
+
+
+def _period_hourly_matrix(
+    period: CalendarPeriod,
+    hourly: list[list[str]],
+    value_index: int,
+) -> tuple[list[list[int]], list[str]]:
+    by_hour = {
+        (dt.date.fromisoformat(row[1]), int(row[3])): int(row[value_index])
+        for row in hourly
+    }
+    if period.grain == "month":
+        dates = [
+            period.start + dt.timedelta(days=offset)
+            for offset in range((period.end - period.start).days + 1)
+        ]
+        return (
+            [[by_hour.get((date, hour), 0) for hour in range(24)] for date in dates],
+            [date.strftime("%m-%d") for date in dates],
+        )
+    matrix: list[list[int]] = []
+    labels: list[str] = []
+    for month in range(period.start.month, period.end.month + 1):
+        dates = {
+            date
+            for date, _ in by_hour
+            if date.year == int(period.period_id) and date.month == month
+        }
+        matrix.append(
+            [sum(by_hour.get((date, hour), 0) for date in dates) for hour in range(24)]
+        )
+        labels.append(f"{month:02d}月")
+    return matrix, labels
+
+
+def _monthly_report_html(
+    period: CalendarPeriod,
+    daily: list[list[str]],
+    hourly: list[list[str]],
+) -> str:
+    labels = [row[1][5:] for row in daily]
+    daily_table = [[row[1], row[2], row[5], *row[6:12]] for row in daily]
+    hourly_table = [[row[1], row[3], row[6], row[7], row[8]] for row in hourly]
+    keyboard_matrix, heatmap_labels = _period_hourly_matrix(period, hourly, 6)
+    click_matrix, _ = _period_hourly_matrix(period, hourly, 7)
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{period.period_id} Itadaki月次活動</title><style>{_styles()}</style></head><body><main>
+<h1>{period.period_id} Itadaki月次活動</h1><p><a href="../../index.html">活動mart索引へ戻る</a></p>
+<section><h2>期間とデータ範囲</h2><p>{period.start.isoformat()} ～ {period.end.isoformat()}（カレンダー月）</p></section>
+<section><h2>月次集計</h2><div class="cards">{_period_cards(daily)}</div></section>
+<section><h2>日別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[6]) for row in daily]), ("click", [float(row[7]) for row in daily])], x_label="日付", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[10]) for row in daily])], x_label="日付", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[11]) for row in daily])], x_label="日付", y_label="秒")}</div>{_table(["日付","ISO曜日","record有無","keyboard","click","MoC","総event","移動cm","電源オン秒"], daily_table)}</section>
+<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-of-month heatmap", x_label="時刻", y_label="日付")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-of-month heatmap", x_label="時刻", y_label="日付")}</div>{_table(["日付","時","keyboard","click","総event"], hourly_table)}</section>
+</main></body></html>"""
+
+
+def _yearly_month_rows(period: CalendarPeriod, daily: list[list[str]]) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+    for month in range(period.start.month, period.end.month + 1):
+        matching = [
+            row
+            for row in daily
+            if dt.date.fromisoformat(row[1]).month == month
+        ]
+        rows.append(
+            [
+                f"{month:02d}月",
+                sum(int(row[5]) for row in matching),
+                sum(int(row[6]) for row in matching),
+                sum(int(row[7]) for row in matching),
+                sum(int(row[8]) for row in matching),
+                sum(int(row[9]) for row in matching),
+                _format_float(sum(float(row[10]) for row in matching)),
+                sum(int(row[11]) for row in matching),
+            ]
+        )
+    return rows
+
+
+def _yearly_report_html(
+    period: CalendarPeriod,
+    daily: list[list[str]],
+    hourly: list[list[str]],
+) -> str:
+    months = _yearly_month_rows(period, daily)
+    labels = [str(row[0]) for row in months]
+    keyboard_matrix, heatmap_labels = _period_hourly_matrix(period, hourly, 6)
+    click_matrix, _ = _period_hourly_matrix(period, hourly, 7)
+    heatmap_table = [
+        [month_label, hour, keyboard_matrix[index][hour], click_matrix[index][hour]]
+        for index, month_label in enumerate(heatmap_labels)
+        for hour in range(24)
+    ]
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{period.period_id} Itadaki年次活動</title><style>{_styles()}</style></head><body><main>
+<h1>{period.period_id} Itadaki年次活動</h1><p><a href="../../index.html">活動mart索引へ戻る</a></p>
+<section><h2>期間とデータ範囲</h2><p>{period.start.isoformat()} ～ {period.end.isoformat()}（カレンダー年）</p></section>
+<section><h2>年次集計</h2><div class="cards">{_period_cards(daily)}</div></section>
+<section><h2>月別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[2]) for row in months]), ("click", [float(row[3]) for row in months])], x_label="月", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[6]) for row in months])], x_label="月", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[7]) for row in months])], x_label="月", y_label="秒")}</div>{_table(["月","観測日数","keyboard","click","MoC","総event","移動cm","電源オン秒"], months)}</section>
+<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-by-month heatmap", x_label="時刻", y_label="月")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-by-month heatmap", x_label="時刻", y_label="月")}</div>{_table(["月","時","keyboard","click"], heatmap_table)}</section>
+</main></body></html>"""
+
+
+def _write_period_reports(
+    mart_root: Path,
+    weeks: list[Week],
+    first: dt.date,
+    last: dt.date,
+    progress: Callable[[str], None] | None,
+) -> tuple[list[CalendarPeriod], list[CalendarPeriod], list[dict[str, Any]]]:
+    daily_rows, hourly_rows = _read_materialized_details(mart_root, weeks)
+    months = _calendar_periods(first, last, "month")
+    years = _calendar_periods(first, last, "year")
+    outputs: list[dict[str, Any]] = []
+    all_periods = [*months, *years]
+    for index, period in enumerate(all_periods, start=1):
+        daily, hourly = _period_rows(period, daily_rows, hourly_rows)
+        content = (
+            _monthly_report_html(period, daily, hourly)
+            if period.grain == "month"
+            else _yearly_report_html(period, daily, hourly)
+        ).encode("utf-8")
+        relative_path = Path(f"{period.grain}s") / period.period_id / "report.html"
+        path = mart_root / relative_path
+        changed = _atomic_bytes(path, content)
+        outputs.append(
+            {
+                "path": relative_path.as_posix(),
+                "period_id": period.period_id,
+                "grain": period.grain,
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+                "changed": changed,
+            }
+        )
+        if progress and (index == 1 or index == len(all_periods) or index % 10 == 0):
+            progress(
+                f"Calendar reports {index}/{len(all_periods)}: "
+                f"{period.grain} {period.period_id}"
+            )
+    return months, years, outputs
+
+
+def _index_html(
+    rows: list[list[Any]],
+    months: list[CalendarPeriod],
+    years: list[CalendarPeriod],
+) -> str:
     links = "".join(
         f'<li><a href="weeks/{html.escape(str(row[0]))}/report.html">{html.escape(str(row[0]))}</a> {html.escape(str(row[1]))} ～ {html.escape(str(row[2]))}</li>'
         for row in reversed(rows)
     )
+    month_links = "".join(
+        f'<li><a href="months/{period.period_id}/report.html">{period.period_id}</a> '
+        f'{period.start.isoformat()} ～ {period.end.isoformat()}</li>'
+        for period in reversed(months)
+    )
+    year_links = "".join(
+        f'<li><a href="years/{period.period_id}/report.html">{period.period_id}</a> '
+        f'{period.start.isoformat()} ～ {period.end.isoformat()}</li>'
+        for period in reversed(years)
+    )
     table_rows = [[row[0], row[6], row[7], row[9], row[12], row[13], row[15]] for row in rows]
     labels = [str(row[0]) for row in rows]
-    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Itadaki週次活動mart</title><style>{_styles()}</style></head><body><main>
-<h1>Itadaki週次活動mart</h1><p class="meta">ISO週（月曜～日曜）。値と直前週との差分を同じ配色で表示します。</p>
+    return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Itadaki活動mart</title><style>{_styles()}</style></head><body><main>
+<h1>Itadaki活動mart</h1><p class="meta">週はISO週（月曜～日曜）、月と年はカレンダー期間です。値と直前週との差分を同じ配色で表示します。</p>
+<section><h2>年次レポート</h2><ul>{year_links}</ul></section>
+<section><h2>月次レポート</h2><ul>{month_links}</ul></section>
 <section><h2>週一覧</h2><ul>{links}</ul></section>
-<section><h2>週次値の推移</h2><div class="chart">{_line_chart(labels, [("keyboard", [float(row[6]) for row in rows]), ("click", [float(row[7]) for row in rows])])}</div>{_table(["ISO週","keyboard","click","総event","keyboard差分","click差分","総event差分"], table_rows)}</section>
+<section><h2>週次値の推移</h2><div class="chart">{_line_chart(labels, [("keyboard", [float(row[6]) for row in rows]), ("click", [float(row[7]) for row in rows])], x_label="ISO週", y_label="event数")}</div>{_table(["ISO週","keyboard","click","総event","keyboard差分","click差分","総event差分"], table_rows)}</section>
 </main></body></html>"""
 
 
-def _write_root(config: PipelineConfig, weeks: list[Week], watermark: dt.date, watermark_sources: list[dict[str, str]]) -> dict[str, Any]:
+def _write_root(
+    config: PipelineConfig,
+    weeks: list[Week],
+    watermark: dt.date,
+    watermark_sources: list[dict[str, str]],
+    first: dt.date,
+    last: dt.date,
+    progress: Callable[[str], None] | None,
+) -> dict[str, Any]:
     assert config.weekly_mart_root is not None
     root = config.weekly_mart_root
     rows = _history_rows(root, weeks)
+    months, years, period_outputs = _write_period_reports(
+        root, weeks, first, last, progress
+    )
     history = _csv_bytes(HISTORY_HEADER, rows)
-    index = _index_html(rows).encode("utf-8")
+    index = _index_html(rows, months, years).encode("utf-8")
     history_changed = _atomic_bytes(root / "weekly_history.csv", history)
     index_changed = _atomic_bytes(root / "index.html", index)
     manifest = {
@@ -731,6 +1158,10 @@ def _write_root(config: PipelineConfig, weeks: list[Week], watermark: dt.date, w
             "index.html": {"size": len(index), "sha256": hashlib.sha256(index).hexdigest()},
             "weekly_history.csv": {"size": len(history), "sha256": hashlib.sha256(history).hexdigest(), "row_count": len(rows)},
         },
+        "calendar_reports": [
+            {key: value for key, value in item.items() if key != "changed"}
+            for item in period_outputs
+        ],
     }
     manifest_changed = _atomic_bytes(root / "manifest.json", _json_bytes(manifest))
     return {
@@ -738,15 +1169,27 @@ def _write_root(config: PipelineConfig, weeks: list[Week], watermark: dt.date, w
         "history_changed": history_changed,
         "manifest_changed": manifest_changed,
         "week_count": len(rows),
+        "month_report_count": len(months),
+        "year_report_count": len(years),
+        "calendar_reports_changed": sum(item["changed"] for item in period_outputs),
     }
 
 
-def build_weekly(config: PipelineConfig, *, apply: bool) -> dict[str, Any]:
+def build_weekly(
+    config: PipelineConfig,
+    *,
+    apply: bool,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Plan or build missing and stale complete ISO weeks."""
     if config.weekly_mart_root is None:
         raise ValueError("weekly_mart_path is required for build-weekly")
+    if progress:
+        progress("Reading ingest watermark")
     cutoff, watermark_sources = _watermark(config)
     eligible_end = cutoff - dt.timedelta(days=cutoff.isoweekday() % 7)
+    if progress:
+        progress("Scanning processed monthly CSV files")
     files = _monthly_files(config.processed_data_root)
     bounds_sources = [item for item in files if item.dataset == "DailyUsage"] or files
     bounds_by_file = [(source_file, _row_dates(source_file)) for source_file in bounds_sources]
@@ -766,6 +1209,8 @@ def build_weekly(config: PipelineConfig, *, apply: bool) -> dict[str, Any]:
         else:
             device_bounds[source_file.device_id] = (min(current[0], bounds[0]), max(current[1], bounds[1]))
     cache: dict[Path, dict[str, Any]] = {}
+    if progress:
+        progress(f"Planning {len(weeks)} complete ISO weeks")
     plans = [
         _plan_week(
             config.weekly_mart_root,
@@ -776,19 +1221,46 @@ def build_weekly(config: PipelineConfig, *, apply: bool) -> dict[str, Any]:
         for week in weeks
     ]
     targets = [plan for plan in plans if plan.status != "unchanged"]
+    if progress:
+        progress(
+            f"Plan: {len(targets)} to generate, "
+            f"{sum(plan.status == 'unchanged' for plan in plans)} unchanged"
+        )
     generated: list[str] = []
     if apply:
-        for plan in targets:
+        for index, plan in enumerate(targets, start=1):
+            if progress and (
+                index == 1 or index == len(targets) or index % 10 == 0
+            ):
+                progress(
+                    f"Weekly reports {index}/{len(targets)}: "
+                    f"{plan.week.week_id} ({plan.status})"
+                )
             data = _aggregate(plan, device_bounds)
             _write_week(plan, data, config, cutoff, watermark_sources)
             generated.append(plan.week.week_id)
-        root_result = _write_root(config, weeks, cutoff, watermark_sources)
+        if progress:
+            progress("Building calendar month/year reports and root index")
+        root_result = _write_root(
+            config,
+            weeks,
+            cutoff,
+            watermark_sources,
+            earliest,
+            eligible_end,
+            progress,
+        )
     else:
+        month_count = len(_calendar_periods(earliest, eligible_end, "month"))
+        year_count = len(_calendar_periods(earliest, eligible_end, "year"))
         root_result = {
             "index_changed": not (config.weekly_mart_root / "index.html").is_file(),
             "history_changed": not (config.weekly_mart_root / "weekly_history.csv").is_file(),
             "manifest_changed": not (config.weekly_mart_root / "manifest.json").is_file(),
             "week_count": len(weeks),
+            "month_report_count": month_count,
+            "year_report_count": year_count,
+            "calendar_reports_changed": None,
         }
     return {
         "apply": apply,
