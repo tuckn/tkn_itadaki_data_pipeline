@@ -15,36 +15,46 @@ dry-runで対象を確認でき、実行時はSHA-256照合、manifest、CSVの�
 
 ## インストール
 
-リポジトリのソースコードの変更を、再インストールなしで反映するeditable
-installation:
+通常利用では、任意のdirectoryからリポジトリのpathを指定してインストールします。
 
 ```console
-uv tool install -e "C:\path\to\tkn_itadaki_data_pipeline"
-itadaki-pipeline --help
+uv tool install "C:\path\to\tkn_itadaki_data_pipeline"
+tkn-itadaki-pipeline --help
 ```
 
 例示したパスは、このリポジトリの実際のフォルダパスに置き換えてください。
-リポジトリ内で実行する場合は、次の短い形式も使用できます。
+リポジトリルートで実行する場合は、`uv tool install .`でも同じです。
+
+通常のインストールでは、インストール時点のcode、package resource、dependencyが
+tool環境へ反映されます。`git pull`などでリポジトリを更新した後は、更新内容を
+反映するため再インストールします。
 
 ```console
-uv tool install -e .
+uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --reinstall
+tkn-itadaki-pipeline --help
 ```
 
-editable installationでは、通常のPythonソースの変更は自動的に反映されます。
-依存関係や`pyproject.toml`の`[project.scripts]`を変更した場合、または
-リポジトリを移動した場合は、インストールコマンドを再実行してください。
+`--force`は、実行ファイルのentry point競合を解消する場合など、tool自体の
+強制インストールが必要な場合に限って使用します。
 
-ソースコードの変更を追従しない独立したinstallationに切り替える場合:
+### 開発用のeditable installation
+
+開発時にsource codeの変更をすぐCLIへ反映したい場合は、editable installationを
+使用します。
 
 ```console
-uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --force
+uv tool install -e "C:\path\to\tkn_itadaki_data_pipeline" --reinstall
 ```
+
+editable installationでは、通常のsource code変更に再インストールは不要です。
+dependency、package metadata、CLI entry pointを変更した場合、またはリポジトリを
+移動・renameした場合は、同じcommandを再実行します。
 
 ### インストールされるコマンド
 
 インストールすると、次のコマンドが使用できるようになります。
 
-- `itadaki-pipeline`: Raw archiveの作成と処理済み月次CSVへの変換に使うコマンド
+- `tkn-itadaki-pipeline`: Raw archiveの作成と処理済み月次CSVへの変換に使うコマンド
 
 ## 初期設定
 
@@ -90,7 +100,7 @@ sources:
 設定を確認します。
 
 ```console
-itadaki-pipeline config show
+tkn-itadaki-pipeline config show
 ```
 
 実際に読み込まれた設定ファイルと、解決後の設定値がJSONで表示されます。
@@ -101,7 +111,7 @@ itadaki-pipeline config show
 ### 1. 処理対象を確認する
 
 ```console
-itadaki-pipeline plan
+tkn-itadaki-pipeline plan
 ```
 
 `modes`に`backfill`を含むsourceについて、処理対象の日付、ファイル数、容量、
@@ -112,13 +122,13 @@ itadaki-pipeline plan
 まずdry-runで確認します。
 
 ```console
-itadaki-pipeline backfill
+tkn-itadaki-pipeline backfill
 ```
 
 内容を確認してから、実際に処理します。
 
 ```console
-itadaki-pipeline backfill --apply
+tkn-itadaki-pipeline backfill --apply
 ```
 
 `modes`に`backfill`を含むsourceが対象です。完了済みの`.rec`をRaw archiveへ
@@ -127,13 +137,13 @@ itadaki-pipeline backfill --apply
 ### 3. 日常的なデータを処理する
 
 ```console
-itadaki-pipeline ingest
+tkn-itadaki-pipeline ingest
 ```
 
 これはdry-runです。内容を確認してから、次を実行します。
 
 ```console
-itadaki-pipeline ingest --apply
+tkn-itadaki-pipeline ingest --apply
 ```
 
 `modes`に`ingest`を含むsourceだけが対象です。当日分と`Total.ini`は処理しません。
@@ -148,8 +158,8 @@ stderrへ出し、内部では`ingest`として処理します。
 週次出力を作ります。最初にdry-runでmissing/stale週を確認します。
 
 ```console
-itadaki-pipeline build-weekly
-itadaki-pipeline build-weekly --apply
+tkn-itadaki-pipeline build-weekly
+tkn-itadaki-pipeline build-weekly --apply
 ```
 
 初回は最古のsource rowを含む週から処理し、以後は入力変更、出力欠損、hash
@@ -164,14 +174,14 @@ itadaki-pipeline build-weekly --apply
 ### 5. 作成済みデータを検証する
 
 ```console
-itadaki-pipeline verify
+tkn-itadaki-pipeline verify
 ```
 
 Raw archiveから月次CSVを再計算して内容の一致を検証し、確認した月数と行数を
 表示します。月ごとの詳細も表示する場合:
 
 ```console
-itadaki-pipeline verify --details
+tkn-itadaki-pipeline verify --details
 ```
 
 `backfill`、`ingest`、`build-weekly`は、`--apply`を付けない限りファイルを
@@ -256,8 +266,8 @@ HTMLは件数、分布、時系列、直前週との差分のみを中立に表�
 明示した設定ファイルを使う場合、`--config`はコマンドの前後どちらにも置けます。
 
 ```console
-itadaki-pipeline --config C:/path/to/config.yaml plan
-itadaki-pipeline plan --config C:/path/to/config.yaml
+tkn-itadaki-pipeline --config C:/path/to/config.yaml plan
+tkn-itadaki-pipeline plan --config C:/path/to/config.yaml
 ```
 
 相対パスは、設定ファイルの場所ではなくcurrent working directoryを基準に
@@ -297,7 +307,7 @@ Windows Task Schedulerへ毎週の処理を登録する補助スクリプトが�
 現在の登録スクリプトは、毎週日曜日の03:00に次のコマンドを実行します。
 
 ```text
-uv run --frozen itadaki-pipeline ingest --apply
+uv run --frozen tkn-itadaki-pipeline ingest --apply
 ```
 
 通常はユーザー単位の設定ファイルが自動的に読み込まれます。別の設定を固定する
@@ -308,7 +318,7 @@ uv run --frozen itadaki-pipeline ingest --apply
 リポジトリの補助スクリプトは、そのTaskを自動登録しません。
 
 ```text
-uv run --frozen itadaki-pipeline build-weekly --apply
+uv run --frozen tkn-itadaki-pipeline build-weekly --apply
 ```
 
 ## 開発

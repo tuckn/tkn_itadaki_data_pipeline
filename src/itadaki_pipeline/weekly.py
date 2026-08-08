@@ -181,7 +181,7 @@ def _watermark(config: PipelineConfig) -> tuple[dt.date, list[dict[str, str]]]:
         if manifest is None:
             raise ValueError(
                 f"No complete ingest manifest for source {source.name!r}; "
-                "run 'itadaki-pipeline ingest --apply' successfully first"
+                "run 'tkn-itadaki-pipeline ingest --apply' successfully first"
             )
         details.append(
             {
@@ -800,7 +800,7 @@ def _write_week(plan: WeekPlan, data: dict[str, Any], config: PipelineConfig, wa
         }
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        "generator": "itadaki-pipeline",
+        "generator": "tkn-itadaki-pipeline",
         "generator_version": GENERATOR_VERSION,
         "week_id": plan.week.week_id,
         "week_start_date": plan.week.start.isoformat(),
@@ -1147,7 +1147,7 @@ def _write_root(
     index_changed = _atomic_bytes(root / "index.html", index)
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        "generator": "itadaki-pipeline",
+        "generator": "tkn-itadaki-pipeline",
         "generator_version": GENERATOR_VERSION,
         "timezone": config.timezone_name,
         "watermark_cutoff_date": watermark.isoformat(),

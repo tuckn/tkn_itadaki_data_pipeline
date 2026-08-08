@@ -7,6 +7,10 @@ from itadaki_pipeline.config import PipelineConfig, ResolvedConfig, SourceConfig
 from itadaki_pipeline.paths import user_paths
 
 
+def test_parser_uses_installed_command_name() -> None:
+    assert _parser().prog == "tkn-itadaki-pipeline"
+
+
 def test_config_option_is_accepted_before_or_after_pipeline_command() -> None:
     before = _parser().parse_args(["--config", "before.yaml", "plan"])
     after = _parser().parse_args(["plan", "--config", "after.yaml"])

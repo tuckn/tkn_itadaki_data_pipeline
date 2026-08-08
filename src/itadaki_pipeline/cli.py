@@ -20,7 +20,7 @@ LOG = logging.getLogger("itadaki_pipeline")
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="itadaki-pipeline",
+        prog="tkn-itadaki-pipeline",
         description="Archive Itadaki Rec logs and build idempotent processed CSVs.",
     )
     parser.add_argument(
