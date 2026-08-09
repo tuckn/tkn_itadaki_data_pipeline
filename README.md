@@ -15,22 +15,23 @@ dry-runで対象を確認でき、実行時はSHA-256照合、manifest、CSVの�
 
 ## インストール
 
-通常利用では、任意のdirectoryからリポジトリのpathを指定してインストールします。
+次のコマンドでインストールします。例示している
+`C:\path\to\tkn_itadaki_data_pipeline`は、このリポジトリの実際のフォルダパスに
+置き換えてください。
 
 ```console
-uv tool install "C:\path\to\tkn_itadaki_data_pipeline"
+cd "C:\path\to\tkn_itadaki_data_pipeline"
+uv tool install .
 tkn-itadaki-pipeline --help
 ```
-
-例示したパスは、このリポジトリの実際のフォルダパスに置き換えてください。
-リポジトリルートで実行する場合は、`uv tool install .`でも同じです。
 
 通常のインストールでは、インストール時点のcode、package resource、dependencyが
 tool環境へ反映されます。`git pull`などでリポジトリを更新した後は、更新内容を
 反映するため再インストールします。
 
 ```console
-uv tool install "C:\path\to\tkn_itadaki_data_pipeline" --reinstall
+cd "C:\path\to\tkn_itadaki_data_pipeline"
+uv tool install . --reinstall
 tkn-itadaki-pipeline --help
 ```
 
@@ -43,7 +44,8 @@ tkn-itadaki-pipeline --help
 使用します。
 
 ```console
-uv tool install -e "C:\path\to\tkn_itadaki_data_pipeline" --reinstall
+cd "C:\path\to\tkn_itadaki_data_pipeline"
+uv tool install -e . --reinstall
 ```
 
 editable installationでは、通常のsource code変更に再インストールは不要です。
