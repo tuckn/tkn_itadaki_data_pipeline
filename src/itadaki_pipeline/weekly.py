@@ -520,6 +520,21 @@ def _table(headers: list[str], rows: list[list[Any]], *, css_class: str = "") ->
     return f'<div class="table-wrap"><table class="{css_class}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
+def _details_table(
+    summary: str,
+    headers: list[str],
+    rows: list[list[Any]],
+    *,
+    css_class: str = "",
+) -> str:
+    return (
+        '<details class="data-table">'
+        f"<summary>{html.escape(summary)}（{len(rows)}行）</summary>"
+        f"{_table(headers, rows, css_class=css_class)}"
+        "</details>"
+    )
+
+
 def _tick_positions(length: int, maximum: int = 10) -> set[int]:
     if length <= maximum:
         return set(range(length))
@@ -724,6 +739,7 @@ main{max-width:1120px;margin:auto;padding:24px}h1,h2{line-height:1.25}h2{margin-
 .meta,.note{color:var(--muted)}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.card{background:white;border:1px solid var(--line);padding:12px;border-radius:8px}.value{font-size:1.35rem;font-variant-numeric:tabular-nums}
 .chart{background:white;border:1px solid var(--line);padding:12px;margin:12px 0;border-radius:8px}svg{display:block;width:100%;height:auto}svg text{font-size:11px;fill:var(--muted)}svg .axis{stroke:#607384;stroke-width:1}svg .grid{stroke:#dce4ea;stroke-width:1}svg .axis-title{font-size:13px;font-weight:600;fill:var(--ink)}
 .table-wrap{overflow:auto;margin:10px 0}table{width:100%;border-collapse:collapse;background:white;font-variant-numeric:tabular-nums}th,td{padding:7px 9px;border:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}th{background:var(--pale)}a{color:var(--blue)}
+details.data-table{margin:12px 0}details.data-table summary{cursor:pointer;color:var(--blue);font-weight:600;padding:8px 0}details.data-table[open] summary{margin-bottom:4px}
 @media(max-width:640px){main{padding:14px}.cards{grid-template-columns:repeat(2,1fr)}th,td{padding:6px}}
 """
 
@@ -767,7 +783,7 @@ def _weekly_html(week: Week, data: dict[str, Any]) -> str:
 <section><h2>期間とデータ範囲</h2><p>{week.start.isoformat()} ～ {week.end.isoformat()}（ISO週、月曜～日曜）</p>{no_rows}</section>
 <section><h2>週次集計</h2><div class="cards">{cards}</div></section>
 <section><h2>曜日別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[6]) for row in daily]), ("click", [float(row[7]) for row in daily])], x_label="日付", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[10]) for row in daily])], x_label="日付", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[11]) for row in daily])], x_label="日付", y_label="秒")}</div>{_table(["日付","ISO曜日","record有無","keyboard","click","MoC","総event","移動cm","電源オン秒"], daily_table)}</section>
-<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(_hourly_matrix(hourly, 6), heatmap_labels, label="keyboard hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div><div class="chart"><h3>click</h3>{_heatmap(_hourly_matrix(hourly, 7), heatmap_labels, label="click hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div>{_table(["日付","時","keyboard","click","総event"], hourly_table)}</section>
+<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(_hourly_matrix(hourly, 6), heatmap_labels, label="keyboard hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div><div class="chart"><h3>click</h3>{_heatmap(_hourly_matrix(hourly, 7), heatmap_labels, label="click hour-of-week heatmap", x_label="時刻", y_label="曜日")}</div>{_details_table("日付×時刻の数値表を表示", ["日付","時","keyboard","click","総event"], hourly_table)}</section>
 <section><h2>論理キー頻度</h2><div class="chart">{_horizontal_bar_chart([str(row[4]) for row in key_top], [float(row[5]) for row in key_top], x_label="件数", y_label="論理キー")}</div>{_table(["順位","code","name","件数","keyboard内構成比"], key_table)}</section>
 <section><h2>端末別</h2>{_table(["device_id","観測日数","keyboard","click","MoC","総event","移動cm","電源オン秒"], device_table)}</section>
 <section><h2>データ品質</h2>{_table(["項目","件数"], quality_rows)}</section>
@@ -938,6 +954,64 @@ def _period_rows(
     return daily, hourly
 
 
+def _calendar_key_counts(
+    source_files: list[SourceFile],
+    first: dt.date,
+    last: dt.date,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Counter[tuple[str, str]]]:
+    result: dict[str, Counter[tuple[str, str]]] = {}
+    input_files = [item for item in source_files if item.dataset == "InputEvents"]
+    for index, source_file in enumerate(input_files, start=1):
+        with source_file.path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                date = dt.date.fromisoformat(row["event_date"])
+                if not first <= date <= last:
+                    continue
+                is_mouse = row["is_mouse"] == "1" or row["event_type"] == "mouse"
+                if is_mouse:
+                    continue
+                key = (row["key_code"], row["key_name"])
+                for period_id in (date.strftime("%Y-%m"), str(date.year)):
+                    result.setdefault(period_id, Counter())[key] += 1
+        if progress and (
+            index == 1 or index == len(input_files) or index % 10 == 0
+        ):
+            progress(f"Logical key input files {index}/{len(input_files)}")
+    return result
+
+
+def _period_key_rows(
+    counts: Counter[tuple[str, str]],
+) -> list[list[Any]]:
+    keyboard_total = sum(counts.values())
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        [
+            rank,
+            code,
+            name,
+            count,
+            _format_float(count / keyboard_total if keyboard_total else 0, 8),
+        ]
+        for rank, ((code, name), count) in enumerate(ranked, start=1)
+    ]
+
+
+def _period_key_section(counts: Counter[tuple[str, str]]) -> str:
+    rows = _period_key_rows(counts)
+    top = rows[:20]
+    return (
+        '<section><h2>論理キー頻度</h2>'
+        '<p class="note">mouseを除く、AutoHotkey変換後の論理キーをevent_dateで期間集計しています。</p>'
+        '<div class="chart"><h3>上位20キー</h3>'
+        f'{_horizontal_bar_chart([str(row[2]) for row in top], [float(row[3]) for row in top], x_label="件数", y_label="論理キー")}'
+        "</div>"
+        f'{_details_table("論理キー頻度の数値表を表示", ["順位","code","name","件数","keyboard内構成比"], rows)}'
+        "</section>"
+    )
+
+
 def _period_cards(daily: list[list[str]]) -> str:
     values: list[int | float] = [
         sum(int(row[5]) for row in daily),
@@ -991,22 +1065,54 @@ def _period_hourly_matrix(
     return matrix, labels
 
 
+def _weekday_hourly_matrix(
+    hourly: list[list[str]],
+    value_index: int,
+) -> tuple[list[list[int]], list[str]]:
+    by_weekday_hour: Counter[tuple[int, int]] = Counter()
+    for row in hourly:
+        by_weekday_hour[(int(row[2]), int(row[3]))] += int(row[value_index])
+    labels = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+    return (
+        [
+            [by_weekday_hour[(iso_weekday, hour)] for hour in range(24)]
+            for iso_weekday in range(1, 8)
+        ],
+        labels,
+    )
+
+
 def _monthly_report_html(
     period: CalendarPeriod,
     daily: list[list[str]],
     hourly: list[list[str]],
+    key_counts: Counter[tuple[str, str]],
 ) -> str:
     labels = [row[1][5:] for row in daily]
     daily_table = [[row[1], row[2], row[5], *row[6:12]] for row in daily]
     hourly_table = [[row[1], row[3], row[6], row[7], row[8]] for row in hourly]
     keyboard_matrix, heatmap_labels = _period_hourly_matrix(period, hourly, 6)
     click_matrix, _ = _period_hourly_matrix(period, hourly, 7)
+    weekday_keyboard_matrix, weekday_labels = _weekday_hourly_matrix(hourly, 6)
+    weekday_click_matrix, _ = _weekday_hourly_matrix(hourly, 7)
+    weekday_hourly_table = [
+        [
+            weekday_label,
+            hour,
+            weekday_keyboard_matrix[index][hour],
+            weekday_click_matrix[index][hour],
+        ]
+        for index, weekday_label in enumerate(weekday_labels)
+        for hour in range(24)
+    ]
     return f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{period.period_id} Itadaki月次活動</title><style>{_styles()}</style></head><body><main>
 <h1>{period.period_id} Itadaki月次活動</h1><p><a href="../../index.html">活動mart索引へ戻る</a></p>
 <section><h2>期間とデータ範囲</h2><p>{period.start.isoformat()} ～ {period.end.isoformat()}（カレンダー月）</p></section>
 <section><h2>月次集計</h2><div class="cards">{_period_cards(daily)}</div></section>
 <section><h2>日別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[6]) for row in daily]), ("click", [float(row[7]) for row in daily])], x_label="日付", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[10]) for row in daily])], x_label="日付", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[11]) for row in daily])], x_label="日付", y_label="秒")}</div>{_table(["日付","ISO曜日","record有無","keyboard","click","MoC","総event","移動cm","電源オン秒"], daily_table)}</section>
-<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-of-month heatmap", x_label="時刻", y_label="日付")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-of-month heatmap", x_label="時刻", y_label="日付")}</div>{_table(["日付","時","keyboard","click","総event"], hourly_table)}</section>
+<section><h2>日付×時刻</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-of-month heatmap", x_label="時刻", y_label="日付")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-of-month heatmap", x_label="時刻", y_label="日付")}</div>{_details_table("日付×時刻の数値表を表示", ["日付","時","keyboard","click","総event"], hourly_table)}</section>
+<section><h2>曜日×時刻</h2><p class="note">月内の同じISO曜日・同じ時刻に属するevent数の合計です。曜日ごとの該当日数は月によって異なります。</p><div class="chart"><h3>keyboard</h3>{_heatmap(weekday_keyboard_matrix, weekday_labels, label="keyboard weekday-by-hour heatmap", x_label="時刻", y_label="曜日")}</div><div class="chart"><h3>click</h3>{_heatmap(weekday_click_matrix, weekday_labels, label="click weekday-by-hour heatmap", x_label="時刻", y_label="曜日")}</div>{_details_table("曜日×時刻の数値表を表示", ["ISO曜日","時","keyboard","click"], weekday_hourly_table)}</section>
+{_period_key_section(key_counts)}
 </main></body></html>"""
 
 
@@ -1037,6 +1143,7 @@ def _yearly_report_html(
     period: CalendarPeriod,
     daily: list[list[str]],
     hourly: list[list[str]],
+    key_counts: Counter[tuple[str, str]],
 ) -> str:
     months = _yearly_month_rows(period, daily)
     labels = [str(row[0]) for row in months]
@@ -1052,18 +1159,23 @@ def _yearly_report_html(
 <section><h2>期間とデータ範囲</h2><p>{period.start.isoformat()} ～ {period.end.isoformat()}（カレンダー年）</p></section>
 <section><h2>年次集計</h2><div class="cards">{_period_cards(daily)}</div></section>
 <section><h2>月別</h2><div class="chart"><h3>keyboard / click</h3>{_bar_chart(labels, [("keyboard", [float(row[2]) for row in months]), ("click", [float(row[3]) for row in months])], x_label="月", y_label="event数")}</div><div class="chart"><h3>mouse移動</h3>{_bar_chart(labels, [("mouse_move_cm", [float(row[6]) for row in months])], x_label="月", y_label="移動cm")}</div><div class="chart"><h3>電源オン</h3>{_bar_chart(labels, [("power_on_sec", [float(row[7]) for row in months])], x_label="月", y_label="秒")}</div>{_table(["月","観測日数","keyboard","click","MoC","総event","移動cm","電源オン秒"], months)}</section>
-<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-by-month heatmap", x_label="時刻", y_label="月")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-by-month heatmap", x_label="時刻", y_label="月")}</div>{_table(["月","時","keyboard","click"], heatmap_table)}</section>
+<section><h2>時刻別</h2><div class="chart"><h3>keyboard</h3>{_heatmap(keyboard_matrix, heatmap_labels, label="keyboard hour-by-month heatmap", x_label="時刻", y_label="月")}</div><div class="chart"><h3>click</h3>{_heatmap(click_matrix, heatmap_labels, label="click hour-by-month heatmap", x_label="時刻", y_label="月")}</div>{_details_table("月×時刻の数値表を表示", ["月","時","keyboard","click"], heatmap_table)}</section>
+{_period_key_section(key_counts)}
 </main></body></html>"""
 
 
 def _write_period_reports(
     mart_root: Path,
     weeks: list[Week],
+    source_files: list[SourceFile],
     first: dt.date,
     last: dt.date,
     progress: Callable[[str], None] | None,
 ) -> tuple[list[CalendarPeriod], list[CalendarPeriod], list[dict[str, Any]]]:
     daily_rows, hourly_rows = _read_materialized_details(mart_root, weeks)
+    if progress:
+        progress("Scanning logical key frequencies for calendar reports")
+    key_counts = _calendar_key_counts(source_files, first, last, progress)
     months = _calendar_periods(first, last, "month")
     years = _calendar_periods(first, last, "year")
     outputs: list[dict[str, Any]] = []
@@ -1071,9 +1183,13 @@ def _write_period_reports(
     for index, period in enumerate(all_periods, start=1):
         daily, hourly = _period_rows(period, daily_rows, hourly_rows)
         content = (
-            _monthly_report_html(period, daily, hourly)
+            _monthly_report_html(
+                period, daily, hourly, key_counts.get(period.period_id, Counter())
+            )
             if period.grain == "month"
-            else _yearly_report_html(period, daily, hourly)
+            else _yearly_report_html(
+                period, daily, hourly, key_counts.get(period.period_id, Counter())
+            )
         ).encode("utf-8")
         relative_path = Path(f"{period.grain}s") / period.period_id / "report.html"
         path = mart_root / relative_path
@@ -1129,6 +1245,7 @@ def _index_html(
 def _write_root(
     config: PipelineConfig,
     weeks: list[Week],
+    source_files: list[SourceFile],
     watermark: dt.date,
     watermark_sources: list[dict[str, str]],
     first: dt.date,
@@ -1139,7 +1256,7 @@ def _write_root(
     root = config.weekly_mart_root
     rows = _history_rows(root, weeks)
     months, years, period_outputs = _write_period_reports(
-        root, weeks, first, last, progress
+        root, weeks, source_files, first, last, progress
     )
     history = _csv_bytes(HISTORY_HEADER, rows)
     index = _index_html(rows, months, years).encode("utf-8")
@@ -1244,6 +1361,7 @@ def build_weekly(
         root_result = _write_root(
             config,
             weeks,
+            files,
             cutoff,
             watermark_sources,
             earliest,

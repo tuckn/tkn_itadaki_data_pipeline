@@ -224,6 +224,9 @@ def test_build_weekly_apply_quality_contract_and_idempotency(tmp_path: Path) -> 
     assert '>時刻</text>' in report
     assert '>曜日</text>' in report
     assert '>論理キー</text>' in report
+    assert '<details class="data-table">' in report
+    assert '<details class="data-table" open>' not in report
+    assert "日付×時刻の数値表を表示（168行）" in report
     index = (config.weekly_mart_root / "index.html").read_text(encoding="utf-8")
     assert 'href="weeks/2026-W14/report.html"' in index
     assert 'href="months/2026-04/report.html"' in index
@@ -239,8 +242,35 @@ def test_build_weekly_apply_quality_contract_and_idempotency(tmp_path: Path) -> 
     ).read_text(encoding="utf-8")
     assert "2026-04 Itadaki月次活動" in month_report
     assert '>日付</text>' in month_report and '>時刻</text>' in month_report
+    assert "<h2>日付×時刻</h2>" in month_report
+    assert "<h2>曜日×時刻</h2>" in month_report
+    assert "月内の同じISO曜日・同じ時刻に属するevent数の合計" in month_report
+    assert 'aria-label="keyboard weekday-by-hour heatmap"' in month_report
+    assert 'aria-label="click weekday-by-hour heatmap"' in month_report
+    assert ">曜日</text>" in month_report
+    assert "<title>土曜日 09:00: 1</title>" in month_report
+    assert "<title>日曜日 20:00: 1</title>" in month_report
+    assert "日付×時刻の数値表を表示（216行）" in month_report
+    assert "曜日×時刻の数値表を表示（168行）" in month_report
+    assert '<details class="data-table" open>' not in month_report
+    assert '<th scope="col">ISO曜日</th>' in month_report
+    assert '<th scope="col">時</th>' in month_report
+    assert '<th scope="col">keyboard</th>' in month_report
+    assert '<th scope="col">click</th>' in month_report
+    assert "<h2>論理キー頻度</h2>" in month_report
+    assert "<title>A: 1</title>" in month_report
+    assert "<title>B: 1</title>" in month_report
+    assert "論理キー頻度の数値表を表示（2行）" in month_report
+    assert "(LClick)" not in month_report
     assert "2026 Itadaki年次活動" in year_report
     assert '>月</text>' in year_report and '>時刻</text>' in year_report
+    assert "月×時刻の数値表を表示（24行）" in year_report
+    assert '<details class="data-table" open>' not in year_report
+    assert "<h2>論理キー頻度</h2>" in year_report
+    assert "<title>A: 1</title>" in year_report
+    assert "<title>B: 1</title>" in year_report
+    assert "論理キー頻度の数値表を表示（2行）" in year_report
+    assert "(LClick)" not in year_report
     assert applied["index"]["month_report_count"] == 1
     assert applied["index"]["year_report_count"] == 1
 
@@ -294,6 +324,9 @@ def test_build_weekly_reports_progress(tmp_path: Path) -> None:
 
     assert messages[0] == "Reading ingest watermark"
     assert any(message.startswith("Weekly reports 1/2") for message in messages)
+    assert "Scanning logical key frequencies for calendar reports" in messages
+    assert "Logical key input files 1/2" in messages
+    assert "Logical key input files 2/2" in messages
     assert any(message.startswith("Calendar reports 1/2") for message in messages)
 
 
