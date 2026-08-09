@@ -29,7 +29,7 @@ $action = New-ScheduledTaskAction `
     -Execute $uv `
     -Argument $arguments `
     -WorkingDirectory $workspace
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '03:00'
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '03:00'
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `

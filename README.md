@@ -306,7 +306,7 @@ Windows Task Schedulerへ毎週の処理を登録する補助スクリプトが�
   -WorkspacePath (Get-Location).Path
 ```
 
-現在の登録スクリプトは、毎週日曜日の03:00に次のコマンドを実行します。
+現在の登録スクリプトは、毎週月曜日の03:00に次のコマンドを実行します。
 
 ```text
 uv run --frozen tkn-itadaki-pipeline ingest --apply
@@ -316,12 +316,20 @@ uv run --frozen tkn-itadaki-pipeline ingest --apply
 場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、スクリプトを
 再実行してください。
 
-週次martは取り込みとは別のTaskとして、たとえば次のactionを登録します。この
-リポジトリの補助スクリプトは、そのTaskを自動登録しません。
+週次martは取り込みとは別のTaskとして、毎週月曜日の03:10に次のactionを
+登録することを推奨します。このリポジトリの補助スクリプトは、そのTaskを
+自動登録しません。
 
 ```text
 uv run --frozen tkn-itadaki-pipeline build-weekly --apply
 ```
+
+分析上の1週間はISO 8601の月曜日～日曜日です。日曜日の03:00では当日分が
+watermarkに含まれず、直前のISO週がまだ完全週にならないことがあります。
+月曜日に`ingest`を完了してから`build-weekly`を実行することで、直前の日曜日
+までを含む完全週を生成できます。両Taskでは「スケジュールされた時刻に開始
+できなかった場合、すぐにタスクを実行する」を有効にしてください。登録補助
+スクリプトが作る`ingest` Taskでは、この設定が既定で有効です。
 
 ## 開発
 
