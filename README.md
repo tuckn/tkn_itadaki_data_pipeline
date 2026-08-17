@@ -3,9 +3,9 @@
 WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと』](https://www.vector.co.jp/soft/win95/util/se263388.html) （以後、Itadaki）が記録したキーボードとマウスの操作ログである日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
 変換し、Itadaki単独の観測値をISO週で集計・可視化するCLIです。
 
-当日分の記録は処理せず、完了した日だけを対象にします。ファイルを変更する前に
-dry-runで対象を確認でき、実行時はSHA-256照合、manifest、CSVの原子的な置換を
-行います。
+当日分の記録は処理せず、完了した日だけを対象にします。変更を行うコマンドは
+オプションなしで実行され、`--dry-run`を明示すると、永続ファイルを変更せずに
+対象を確認できます。実行時はSHA-256照合、manifest、CSVの原子的な置換を行います。
 
 ## 必要なもの
 
@@ -70,34 +70,43 @@ Copy-Item ".\.tkn\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.
 作成した`config.yaml`を開き、使用環境に合わせてパスと端末名を変更します。
 
 ```yaml
-timezone: Asia/Tokyo
+default_profile: current-pc
 processed_data_path: C:/path/to/processed-data/Itadaki
 weekly_mart_path: C:/path/to/marts/activities/computerActivityWeekly
 
-sources:
+profiles:
   - name: current-pc
     device_id: Example Current PC
+    timezone: Asia/Tokyo
     source_path: C:/path/to/active/Itadaki/Rec
     destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
-    modes:
-      - backfill
-      - ingest
     delete_after_success: true
 ```
 
+- `default_profile`: `--profile`を省略したときに使用するprofile名
+- `profiles`: PCごとの入力、archive、timezone、削除設定
+- `name`: `--profile`で指定する一意なprofile名
 - `source_path`: Itadakiの`Rec`フォルダ
 - `destination_path`: 検証済み`.rec`を保存する端末別Raw archive
 - `processed_data_path`: `InputEvents`と`DailyUsage`の出力ルート
 - `device_id`: 記録元のPCを識別する名前
-- `modes`: このsourceを`backfill`、`ingest`のどちらで処理するか
+- `timezone`: 当日分を除外するために使う記録元PCのtimezone。現在は`Asia/Tokyo`
+  のみ対応
 - `weekly_mart_path`: `build-weekly`が週次martを出力するルート。ほかのコマンド
   では省略可能
 - `delete_after_success`: archive、CSV、manifestの確定後に、完了日分を
   `source_path`から削除するか
 - `log_path`: 省略時は`~/.tkn/itadaki_data_pipeline/state/logs`
 
-別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はsourceごとに明示します。
+別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はprofileごとに明示します。
+`processed_data_path`と`weekly_mart_path`はprofile間で共有し、処理済みデータは
+`device_id`別に保存します。
 公開用の全設定例は[`.tkn/config.example.yaml`](.tkn/config.example.yaml)を参照してください。
+
+以前の`source`選択用設定である`sources`と`modes`は使用できません。各`sources`
+entryを`profiles`へ移し、`timezone`をprofile内へ移動して、`default_profile`を
+指定してください。`ingest --backfill`も廃止され、過去データは対象profileを
+`--profile`で指定して取り込みます。
 
 設定を確認します。
 
@@ -108,86 +117,98 @@ tkn-itadaki-pipeline config show
 実際に読み込まれた設定ファイルと、解決後の設定値がJSONで表示されます。
 ファイルの移動やCSVの作成は行いません。
 
+別のprofileを確認する場合は、`--profile`で`profiles.name`を指定します。
+
+```console
+tkn-itadaki-pipeline config show --profile historical-pc
+```
+
 ## 基本的な使用方法
 
-### 1. 処理対象を確認する
+### 1. 日常的なデータを取り込む
 
 ```console
-tkn-itadaki-pipeline plan
+tkn-itadaki-pipeline ingest --dry-run
 ```
 
-`modes`に`backfill`を含むsourceについて、処理対象の日付、ファイル数、容量、
-検証警告を表示します。`plan`は常にdry-runで、ファイルを変更しません。
-
-### 2. 初回または過去データを処理する
-
-まずdry-runで確認します。
-
-```console
-tkn-itadaki-pipeline backfill
-```
-
-内容を確認してから、実際に処理します。
-
-```console
-tkn-itadaki-pipeline backfill --apply
-```
-
-`modes`に`backfill`を含むsourceが対象です。完了済みの`.rec`をRaw archiveへ
-保存し、対象月の処理済みCSVとmanifestを更新します。
-
-### 3. 日常的なデータを処理する
+処理対象の日付、ファイル数、容量、検証警告を確認してから、実際に処理します。
 
 ```console
 tkn-itadaki-pipeline ingest
 ```
 
-これはdry-runです。内容を確認してから、次を実行します。
+`--profile`を省略すると`default_profile`が対象です。当日分と`Total.ini`は処理
+しません。定期実行にはこのコマンドを使用します。
+
+### 2. 初回または過去データを取り込む
+
+まずdry-runで確認します。
 
 ```console
-tkn-itadaki-pipeline ingest --apply
+tkn-itadaki-pipeline ingest --profile historical-pc --dry-run
 ```
 
-`modes`に`ingest`を含むsourceだけが対象です。当日分と`Total.ini`は処理しません。
-定期実行にはこのコマンドを使用します。
+内容を確認してから、実際に処理します。
 
-旧`run`コマンドと設定の`modes: [run]`も当面は受理しますが、非推奨警告を
-stderrへ出し、内部では`ingest`として処理します。
+```console
+tkn-itadaki-pipeline ingest --profile historical-pc
+```
 
-### 4. 完全週の活動martを作る
+指定したprofileだけが対象です。完了済みの`.rec`をRaw archiveへ保存し、対象月の
+処理済みCSVとmanifestを更新します。過去ログを残すprofileでは
+`delete_after_success: false`を指定します。
 
-`ingest --apply`が確定したwatermarkまでを対象に、ISO 8601の月曜～日曜で
+### 3. 完全週の活動martを作る
+
+`ingest`が確定したwatermarkまでを対象に、ISO 8601の月曜～日曜で
 週次出力を作ります。最初にdry-runでmissing/stale週を確認します。
 
 ```console
+tkn-itadaki-pipeline build-weekly --dry-run
 tkn-itadaki-pipeline build-weekly
-tkn-itadaki-pipeline build-weekly --apply
 ```
 
 初回は最古のsource rowを含む週から処理し、以後は入力変更、出力欠損、hash
 不一致がある完全週だけを再生成します。記録のない週も出力し、活動0とは解釈せず
 `observed_date_count: 0`、`source rowなし`と表示します。
 
-`--apply`では処理状況をコンソールへ順次表示し、終了時に対象週数、生成週数、
+`--profile`を省略した場合、`default_profile`の最新の正常な`ingest`をwatermarkに
+使用し、共有の`processed_data_path`にある全`device_id`のデータを集計します。
+
+通常実行では処理状況をコンソールへ順次表示し、終了時に対象週数、生成週数、
 月次・年次レポート数、mart pathを要約します。入力fingerprintや週ごとの詳細を
 含むJSON結果はコンソールへ展開せず、終了時に表示する`Result JSON`のパスへ
 保存します。テキストログのパスも`Log`として表示します。
 
-### 5. 作成済みデータを検証する
+### 4. 作成済みデータを検証する
 
 ```console
 tkn-itadaki-pipeline verify
 ```
 
 Raw archiveから月次CSVを再計算して内容の一致を検証し、確認した月数と行数を
-表示します。月ごとの詳細も表示する場合:
+表示します。省略時は`default_profile`、`--profile`指定時はそのprofileの
+Raw archiveを検証します。月ごとの詳細も表示する場合:
 
 ```console
 tkn-itadaki-pipeline verify --details
 ```
 
-`backfill`、`ingest`、`build-weekly`は、`--apply`を付けない限りファイルを
-変更しません。
+`ingest`と`build-weekly`は、オプションなしで名前どおりの変更を行います。
+`--dry-run`を指定した場合だけ模擬実行になります。read-onlyの`verify`と
+`config show`には`--dry-run`はありません。
+
+### dry-runの境界
+
+`--dry-run`でも通常実行と同じ設定解決、入力読取、`.rec`の形式検証、既存stateの
+確認を行い、対象日・件数・path、作成または再生成予定の週、削除設定、skip理由や
+警告を表示します。このCLIはnetwork access、外部service、生成AIを使用しません。
+
+dry-runではRaw archive、処理済みCSV、mart、設定、state、cache、log、result JSONを
+作成・更新・削除せず、sourceファイルも削除しません。一時的な計算が必要な場合は
+platform標準の一時領域だけを使用し、終了時に残しません。dry-runから通常実行までに
+入力が変わる可能性があるため、通常実行ではコピー、置換、削除の直前にもhashと
+保護条件を再検証します。
 
 ## 出力
 
@@ -272,8 +293,16 @@ HTMLは件数、分布、時系列、直前週との差分のみを中立に表�
 明示した設定ファイルを使う場合、`--config`はコマンドの前後どちらにも置けます。
 
 ```console
-tkn-itadaki-pipeline --config C:/path/to/config.yaml plan
-tkn-itadaki-pipeline plan --config C:/path/to/config.yaml
+tkn-itadaki-pipeline --config C:/path/to/config.yaml ingest --dry-run
+tkn-itadaki-pipeline ingest --dry-run --config C:/path/to/config.yaml
+```
+
+profileもコマンドの前後どちらにも指定できます。省略時は`default_profile`を
+使用します。
+
+```console
+tkn-itadaki-pipeline --profile historical-pc ingest --dry-run
+tkn-itadaki-pipeline ingest --dry-run --profile historical-pc
 ```
 
 相対パスは、設定ファイルの場所ではなくcurrent working directoryを基準に
@@ -313,19 +342,19 @@ Windows Task Schedulerへ毎週の処理を登録する補助スクリプトが�
 現在の登録スクリプトは、毎週月曜日の03:00に次のコマンドを実行します。
 
 ```text
-uv run --frozen tkn-itadaki-pipeline ingest --apply
+uv run --frozen tkn-itadaki-pipeline ingest
 ```
 
-通常はユーザー単位の設定ファイルが自動的に読み込まれます。別の設定を固定する
-場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、スクリプトを
-再実行してください。
+通常はユーザー単位の設定ファイルと、その`default_profile`が自動的に使用されます。
+別の設定を固定する場合だけ`-ConfigPath`を追加します。登録内容を変更した後は、
+スクリプトを再実行してください。
 
 週次martは取り込みとは別のTaskとして、毎週月曜日の03:10に次のactionを
 登録することを推奨します。このリポジトリの補助スクリプトは、そのTaskを
 自動登録しません。
 
 ```text
-uv run --frozen tkn-itadaki-pipeline build-weekly --apply
+uv run --frozen tkn-itadaki-pipeline build-weekly
 ```
 
 分析上の1週間はISO 8601の月曜日～日曜日です。日曜日の03:00では当日分が

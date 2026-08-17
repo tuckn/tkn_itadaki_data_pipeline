@@ -13,31 +13,47 @@ from .paths import CONFIG_FILENAME, AppPaths, runtime_temp_base, user_paths
 
 
 @dataclass(frozen=True)
-class SourceConfig:
+class ProfileConfig:
     name: str
     device_id: str
+    timezone_name: str
+    timezone: dt.tzinfo
     rec_dir: Path
     archive_root: Path
-    modes: tuple[str, ...]
     delete_after_success: bool
-    legacy_run_mode: bool = False
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
     config_path: Path
-    timezone_name: str
-    timezone: dt.tzinfo
     processed_data_root: Path
     log_dir: Path
-    sources: tuple[SourceConfig, ...]
+    default_profile_name: str
+    selected_profile_name: str
+    profiles: tuple[ProfileConfig, ...]
     weekly_mart_root: Path | None = None
+
+    @property
+    def profile(self) -> ProfileConfig:
+        return next(
+            profile
+            for profile in self.profiles
+            if profile.name == self.selected_profile_name
+        )
+
+    @property
+    def timezone_name(self) -> str:
+        return self.profile.timezone_name
+
+    @property
+    def timezone(self) -> dt.tzinfo:
+        return self.profile.timezone
 
 
 @dataclass(frozen=True)
 class ResolvedConfig:
     config: PipelineConfig
-    sources: tuple[str, ...]
+    config_sources: tuple[str, ...]
     paths: AppPaths
 
 
@@ -94,89 +110,119 @@ def _build_config(
     cwd: Path,
     config_path: Path,
     paths: AppPaths,
+    profile_name: str | None,
 ) -> PipelineConfig:
+    if "sources" in raw:
+        raise ValueError(
+            "Config key 'sources' is no longer supported; use 'profiles' and "
+            "'default_profile'"
+        )
+    if "timezone" in raw:
+        raise ValueError(
+            "Top-level 'timezone' is no longer supported; set it on each profile"
+        )
     _only_known_keys(
         raw,
         {
-            "timezone",
+            "default_profile",
+            "profiles",
             "processed_data_path",
             "weekly_mart_path",
             "log_path",
-            "sources",
         },
         location=str(config_path),
     )
 
-    timezone_name = str(raw.get("timezone", "Asia/Tokyo"))
     processed_data_root_value = raw.get("processed_data_path")
     if not processed_data_root_value:
         raise ValueError("processed_data_path is required")
 
-    source_items = raw.get("sources", [])
-    if not isinstance(source_items, list) or not source_items:
-        raise ValueError("At least one sources entry is required")
+    profile_items = raw.get("profiles", [])
+    if not isinstance(profile_items, list) or not profile_items:
+        raise ValueError("At least one profiles entry is required")
 
-    sources: list[SourceConfig] = []
+    profiles: list[ProfileConfig] = []
     names: set[str] = set()
-    for item in source_items:
+    for item in profile_items:
         if not isinstance(item, dict):
-            raise ValueError("Each sources entry must be a mapping")
+            raise ValueError("Each profiles entry must be a mapping")
+        if "modes" in item:
+            raise ValueError(
+                "Profile key 'modes' is no longer supported; select one profile "
+                "with --profile"
+            )
         _only_known_keys(
             item,
             {
                 "name",
                 "device_id",
+                "timezone",
                 "source_path",
                 "destination_path",
-                "modes",
                 "delete_after_success",
             },
-            location=f"{config_path}: sources entry",
+            location=f"{config_path}: profiles entry",
         )
+        if "name" not in item:
+            raise ValueError("Each profiles entry requires name")
         name = str(item["name"])
+        if not name:
+            raise ValueError("Profile name must not be empty")
         if name in names:
-            raise ValueError(f"Duplicate source name: {name}")
+            raise ValueError(f"Duplicate profile name: {name}")
         names.add(name)
-        raw_modes = tuple(
-            str(mode) for mode in item.get("modes", ["backfill", "ingest"])
-        )
-        unsupported = set(raw_modes) - {"backfill", "ingest", "run"}
-        if unsupported:
-            raise ValueError(f"{name}: unsupported modes: {sorted(unsupported)}")
-        legacy_run_mode = "run" in raw_modes
-        modes = tuple(dict.fromkeys("ingest" if mode == "run" else mode for mode in raw_modes))
 
         source_path = item.get("source_path")
         destination_path = item.get("destination_path")
+        device_id = item.get("device_id")
+        if not device_id:
+            raise ValueError(f"{name}: device_id is required")
         if not source_path:
             raise ValueError(f"{name}: source_path is required")
         if not destination_path:
             raise ValueError(f"{name}: destination_path is required")
 
-        sources.append(
-            SourceConfig(
+        timezone_name = str(item.get("timezone", "Asia/Tokyo"))
+        profiles.append(
+            ProfileConfig(
                 name=name,
-                device_id=str(item["device_id"]),
+                device_id=str(device_id),
+                timezone_name=timezone_name,
+                timezone=_timezone(timezone_name),
                 rec_dir=_path(str(source_path), cwd),
                 archive_root=_path(str(destination_path), cwd),
-                modes=modes,
                 delete_after_success=bool(item.get("delete_after_success", False)),
-                legacy_run_mode=legacy_run_mode,
             )
+        )
+
+    default_profile_value = raw.get("default_profile")
+    if not default_profile_value:
+        raise ValueError("default_profile is required")
+    default_profile_name = str(default_profile_value)
+    if default_profile_name not in names:
+        raise ValueError(
+            f"Unknown default_profile {default_profile_name!r}; available profiles: "
+            f"{sorted(names)}"
+        )
+    selected_profile_name = profile_name or default_profile_name
+    if selected_profile_name not in names:
+        raise ValueError(
+            f"Unknown profile {selected_profile_name!r}; available profiles: "
+            f"{sorted(names)}"
         )
 
     weekly_mart_value = raw.get("weekly_mart_path")
 
     return PipelineConfig(
         config_path=config_path,
-        timezone_name=timezone_name,
-        timezone=_timezone(timezone_name),
         processed_data_root=_path(str(processed_data_root_value), cwd),
         log_dir=_path(
             str(raw.get("log_path", paths.state_dir / "logs")),
             cwd,
         ),
-        sources=tuple(sources),
+        default_profile_name=default_profile_name,
+        selected_profile_name=selected_profile_name,
+        profiles=tuple(profiles),
         weekly_mart_root=(
             _path(str(weekly_mart_value), cwd) if weekly_mart_value else None
         ),
@@ -187,6 +233,7 @@ def resolve_config(
     *,
     cwd: Path | None = None,
     explicit_config: Path | None = None,
+    profile_name: str | None = None,
 ) -> ResolvedConfig:
     """Resolve global, CWD, and explicit configuration in that order."""
     current = (cwd or Path.cwd()).resolve()
@@ -196,12 +243,19 @@ def resolve_config(
         candidates.append(explicit_config.expanduser().resolve())
 
     values: dict[str, Any] = {}
-    sources: list[str] = []
+    config_sources: list[str] = []
     last_path: Path | None = None
     for path in candidates:
         if path.is_file():
-            values.update(_load_mapping(path))
-            sources.append(str(path))
+            layer = _load_mapping(path)
+            if "profiles" in layer:
+                values.pop("sources", None)
+                values.pop("timezone", None)
+            if "sources" in layer:
+                values.pop("profiles", None)
+                values.pop("default_profile", None)
+            values.update(layer)
+            config_sources.append(str(path))
             last_path = path
 
     if last_path is None:
@@ -214,10 +268,12 @@ def resolve_config(
             cwd=current,
             config_path=last_path,
             paths=paths,
+            profile_name=profile_name,
         ),
-        sources=tuple(sources),
+        config_sources=tuple(config_sources),
         paths=paths,
     )
+
 
 def public_config(
     config: PipelineConfig,
@@ -225,7 +281,8 @@ def public_config(
 ) -> dict[str, Any]:
     storage = paths or user_paths()
     return {
-        "timezone": config.timezone_name,
+        "default_profile": config.default_profile_name,
+        "selected_profile": config.selected_profile_name,
         "processed_data_path": str(config.processed_data_root),
         "weekly_mart_path": (
             str(config.weekly_mart_root) if config.weekly_mart_root else None
@@ -239,15 +296,15 @@ def public_config(
             "cache_path": str(storage.cache_dir),
             "runtime_temp_base": str(runtime_temp_base()),
         },
-        "sources": [
+        "profiles": [
             {
-                "name": source.name,
-                "device_id": source.device_id,
-                "source_path": str(source.rec_dir),
-                "destination_path": str(source.archive_root),
-                "modes": list(source.modes),
-                "delete_after_success": source.delete_after_success,
+                "name": profile.name,
+                "device_id": profile.device_id,
+                "timezone": profile.timezone_name,
+                "source_path": str(profile.rec_dir),
+                "destination_path": str(profile.archive_root),
+                "delete_after_success": profile.delete_after_success,
             }
-            for source in config.sources
+            for profile in config.profiles
         ],
     }

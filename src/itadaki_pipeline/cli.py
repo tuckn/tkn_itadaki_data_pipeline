@@ -31,14 +31,35 @@ def _parser() -> argparse.ArgumentParser:
             "May also be placed after a pipeline command."
         ),
     )
+    parser.add_argument(
+        "--profile",
+        help=(
+            "Profile name from config. Uses default_profile when omitted. "
+            "May also be placed after a pipeline command."
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("plan", "backfill", "ingest", "run", "verify", "build-weekly"):
-        subparser = subparsers.add_parser(command)
+    command_help = {
+        "ingest": "Archive completed records and rebuild monthly CSV files.",
+        "verify": "Verify processed CSV files against the Raw archive.",
+        "build-weekly": "Build weekly, monthly, and yearly activity reports.",
+    }
+    for command in ("ingest", "verify", "build-weekly"):
+        subparser = subparsers.add_parser(
+            command,
+            help=command_help[command],
+            description=command_help[command],
+        )
         subparser.add_argument(
             "--config",
             type=Path,
             dest="command_config",
             help="Explicit YAML configuration path.",
+        )
+        subparser.add_argument(
+            "--profile",
+            dest="command_profile",
+            help="Profile name from config. Uses default_profile when omitted.",
         )
         if command == "verify":
             subparser.add_argument(
@@ -46,20 +67,29 @@ def _parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Include one result item per verified device-month.",
             )
-        if command in ("backfill", "ingest", "run", "build-weekly"):
+        if command in ("ingest", "build-weekly"):
             subparser.add_argument(
-                "--apply",
+                "--dry-run",
                 action="store_true",
-                help="Apply changes. Without this flag the command is a dry-run.",
+                help=(
+                    "Validate inputs and preview changes without creating, updating, "
+                    "or deleting persistent files, including logs and result reports. "
+                    "This pipeline does not use network services or generative AI."
+                ),
             )
     config_parser = subparsers.add_parser("config", help="Configuration operations.")
     config_subparsers = config_parser.add_subparsers(
         dest="config_command",
         required=True,
     )
-    config_subparsers.add_parser(
+    config_show_parser = config_subparsers.add_parser(
         "show",
         help="Show resolved configuration and files used.",
+    )
+    config_show_parser.add_argument(
+        "--profile",
+        dest="command_profile",
+        help="Profile name from config. Uses default_profile when omitted.",
     )
     return parser
 
@@ -77,6 +107,14 @@ def _configure_file_log(log_dir: Path, command: str) -> Path:
     LOG.setLevel(logging.INFO)
     LOG.addHandler(handler)
     return path
+
+
+def _close_file_logs() -> None:
+    """Detach file handlers so an in-process dry-run cannot append to an old log."""
+    for existing in list(LOG.handlers):
+        if isinstance(existing, logging.FileHandler):
+            existing.close()
+            LOG.removeHandler(existing)
 
 
 def _write_result_json(log_path: Path, payload: dict) -> Path:
@@ -103,7 +141,7 @@ def _print_plans(plans: object) -> None:
     for plan in plans:
         payload.append(
             {
-                "source": plan.source.name,
+                "profile": plan.source.name,
                 "device_id": plan.source.device_id,
                 "source_path": str(plan.source.rec_dir),
                 "destination_path": str(plan.source.archive_root),
@@ -127,7 +165,7 @@ def _print_plans(plans: object) -> None:
 def _print_results(results: object) -> None:
     payload = [
         {
-            "source": result.source_name,
+            "profile": result.profile_name,
             "device_id": result.device_id,
             "dates": result.dates,
             "copied_files": result.copied_files,
@@ -144,25 +182,20 @@ def _print_results(results: object) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    _close_file_logs()
     try:
         explicit_config = getattr(args, "command_config", None) or args.config
-        resolved = resolve_config(explicit_config=explicit_config)
+        profile_name = getattr(args, "command_profile", None) or args.profile
+        resolved = resolve_config(
+            explicit_config=explicit_config,
+            profile_name=profile_name,
+        )
         config = resolved.config
-        if args.command == "run":
-            print(
-                "[WARNING] 'run' is deprecated; use 'ingest' instead.",
-                file=sys.stderr,
-            )
-        if any(source.legacy_run_mode for source in config.sources):
-            print(
-                "[WARNING] config mode 'run' is deprecated; use 'ingest' instead.",
-                file=sys.stderr,
-            )
         if args.command == "config":
             print(
                 json.dumps(
                     {
-                        "sources": list(resolved.sources),
+                        "config_sources": list(resolved.config_sources),
                         "values": public_config(config, resolved.paths),
                     },
                     ensure_ascii=False,
@@ -184,15 +217,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "build-weekly":
-            apply = bool(args.apply)
-            log_path = _configure_file_log(config.log_dir, args.command)
+            apply = not args.dry_run
+            log_path = (
+                _configure_file_log(config.log_dir, args.command) if apply else None
+            )
             _progress(
-                f"Starting build-weekly ({'apply' if apply else 'dry-run'})"
+                f"Starting build-weekly ({'write' if apply else 'dry-run'})"
             )
             payload = build_weekly(config, apply=apply, progress=_progress)
-            payload["log_path"] = str(log_path)
-            result_path = _write_result_json(log_path, payload)
-            LOG.info("Result JSON: %s", result_path)
+            result_path = None
+            if log_path is not None:
+                payload["log_path"] = str(log_path)
+                result_path = _write_result_json(log_path, payload)
+                LOG.info("Result JSON: %s", result_path)
             LOG.info("Completed build-weekly")
             print(
                 f"[SUCCESS] build-weekly "
@@ -205,23 +242,45 @@ def main(argv: list[str] | None = None) -> int:
                 f"{payload['unchanged_week_count']} unchanged, "
                 f"{payload['stale_week_count']} stale."
             )
+            if not apply:
+                print(
+                    f"[INFO] Planned actions: "
+                    f"{payload['missing_week_count']} create, "
+                    f"{payload['stale_week_count']} replace, "
+                    f"0 update, 0 delete, "
+                    f"{payload['unchanged_week_count']} skip."
+                )
+                for target in payload["weeks_to_generate"]:
+                    print(
+                        f"[INFO] Would {target['status']}: {target['week_id']} "
+                        f"({target['reason']})"
+                    )
             print(
                 f"[INFO] Calendar reports: "
                 f"{payload['index']['month_report_count']} monthly, "
                 f"{payload['index']['year_report_count']} yearly."
             )
-            print(f"[INFO] Result JSON: {result_path}")
-            print(f"[INFO] Log: {log_path}")
+            if result_path is not None and log_path is not None:
+                print(f"[INFO] Result JSON: {result_path}")
+                print(f"[INFO] Log: {log_path}")
+            else:
+                print("[INFO] Dry-run only. No persistent files were changed.")
             return 0
 
-        mode = "backfill" if args.command in ("plan", "backfill") else "ingest"
-        apply = bool(getattr(args, "apply", False)) and args.command != "plan"
+        apply = not args.dry_run
         log_path = None
         if apply:
             log_path = _configure_file_log(config.log_dir, args.command)
-            LOG.info("Starting %s with %s", args.command, config.config_path)
+            LOG.info(
+                "Starting ingest with profile %s from %s",
+                config.selected_profile_name,
+                config.config_path,
+            )
 
-        plans, results = run_pipeline(config, mode, apply=apply)
+        plans, results = run_pipeline(
+            config,
+            apply=apply,
+        )
         _print_plans(plans)
         if apply:
             _print_results(results)

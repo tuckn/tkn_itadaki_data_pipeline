@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import PipelineConfig, SourceConfig
+from .config import PipelineConfig, ProfileConfig
 from .parser import (
     SERIES,
     ParseError,
@@ -58,10 +58,12 @@ DAILY_USAGE_HEADER = [
     "power_on_sec",
 ]
 
+INGEST_MANIFEST_SCHEMA_VERSION = 2
+
 
 @dataclass(frozen=True)
 class SourcePlan:
-    source: SourceConfig
+    source: ProfileConfig
     cutoff_date: dt.date
     dates: tuple[dt.date, ...]
     source_files: dict[tuple[dt.date, str], Path]
@@ -81,7 +83,7 @@ class OutputRecord:
 
 @dataclass(frozen=True)
 class SourceRunResult:
-    source_name: str
+    profile_name: str
     device_id: str
     dates: int
     copied_files: int
@@ -110,7 +112,7 @@ def archive_relative(date: dt.date, series: str) -> Path:
     )
 
 
-def archive_path(source: SourceConfig, date: dt.date, series: str) -> Path:
+def archive_path(source: ProfileConfig, date: dt.date, series: str) -> Path:
     return source.archive_root / archive_relative(date, series)
 
 
@@ -127,7 +129,7 @@ def _discover_series(rec_dir: Path, series: str) -> dict[dt.date, Path]:
     return result
 
 
-def discover_source(source: SourceConfig, cutoff_date: dt.date) -> SourcePlan:
+def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
     if not source.rec_dir.is_dir():
         raise FileNotFoundError(f"Rec directory not found: {source.rec_dir}")
     by_series = {series: _discover_series(source.rec_dir, series) for series in SERIES}
@@ -156,6 +158,15 @@ def discover_source(source: SourceConfig, cutoff_date: dt.date) -> SourcePlan:
                     )
                 validate_series_file(archived, series)
                 continue
+            archived = archive_path(source, record_date, series)
+            if archived.is_file():
+                source_hash = sha256_file(path)
+                archived_hash = sha256_file(archived)
+                if source_hash != archived_hash:
+                    raise ParseError(
+                        f"Archive hash collision at {archived}: "
+                        f"{archived_hash} != {source_hash}"
+                    )
             validate_series_file(path, series)
             source_files[(record_date, series)] = path
             total_bytes += path.stat().st_size
@@ -194,23 +205,14 @@ def discover_source(source: SourceConfig, cutoff_date: dt.date) -> SourcePlan:
     )
 
 
-def plans_for_mode(
+def plans_for_ingest(
     config: PipelineConfig,
-    mode: str,
     *,
     now: dt.datetime | None = None,
 ) -> list[SourcePlan]:
-    canonical_mode = "ingest" if mode == "run" else mode
     local_now = now or dt.datetime.now(config.timezone)
     cutoff = local_now.astimezone(config.timezone).date() - dt.timedelta(days=1)
-    return [
-        discover_source(source, cutoff)
-        for source in config.sources
-        if canonical_mode in tuple(
-            "ingest" if source_mode == "run" else source_mode
-            for source_mode in source.modes
-        )
-    ]
+    return [discover_source(config.profile, cutoff)]
 
 
 def _atomic_copy_verified(source: Path, destination: Path, expected_hash: str) -> str:
@@ -240,7 +242,7 @@ def _atomic_copy_verified(source: Path, destination: Path, expected_hash: str) -
 
 
 def _month_archive_files(
-    source: SourceConfig,
+    source: ProfileConfig,
     year: int,
     month: int,
 ) -> dict[dt.date, dict[str, Path]]:
@@ -375,7 +377,7 @@ def _commit_csv(temporary: Path, destination: Path, dataset: str, rows: int) -> 
 
 def build_month(
     config: PipelineConfig,
-    source: SourceConfig,
+    source: ProfileConfig,
     year: int,
     month: int,
 ) -> tuple[list[OutputRecord], list[str]]:
@@ -494,7 +496,7 @@ def _relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _total_ini_snapshot(source: SourceConfig) -> dict | None:
+def _total_ini_snapshot(source: ProfileConfig) -> dict | None:
     path = source.rec_dir / "Total.ini"
     if not path.is_file():
         return None
@@ -514,11 +516,10 @@ def process_source(
     now: dt.datetime | None = None,
 ) -> SourceRunResult:
     source = plan.source
-    canonical_mode = "ingest" if mode == "run" else mode
     local_now = (now or dt.datetime.now(config.timezone)).astimezone(config.timezone)
     batch_id = (
         local_now.strftime("%Y%m%dT%H%M%S%z")
-        + f"_{canonical_mode}_{source.name.replace(' ', '-')}"
+        + f"_{mode}_{source.name.replace(' ', '-')}"
     )
     manifest_path = (
         source.archive_root
@@ -529,16 +530,16 @@ def process_source(
     )
     if not plan.dates:
         payload = {
-            "schema_version": 1,
+            "schema_version": INGEST_MANIFEST_SCHEMA_VERSION,
             "batch_id": batch_id,
             "status": "complete",
-            "mode": canonical_mode,
+            "mode": mode,
+            "profile_name": source.name,
             "started_at": local_now.isoformat(timespec="seconds"),
             "completed_at": dt.datetime.now(config.timezone).isoformat(
                 timespec="seconds"
             ),
             "timezone": config.timezone_name,
-            "source_name": source.name,
             "device_id": source.device_id,
             "cutoff_date": plan.cutoff_date.isoformat(),
             "date_range": None,
@@ -556,7 +557,7 @@ def process_source(
         }
         _write_json_atomic(manifest_path, payload)
         return SourceRunResult(
-            source_name=source.name,
+            profile_name=source.name,
             device_id=source.device_id,
             dates=0,
             copied_files=0,
@@ -618,14 +619,14 @@ def process_source(
     warnings = list(dict.fromkeys(warnings))
 
     payload = {
-        "schema_version": 1,
+        "schema_version": INGEST_MANIFEST_SCHEMA_VERSION,
         "batch_id": batch_id,
         "status": "complete",
-        "mode": canonical_mode,
+        "mode": mode,
+        "profile_name": source.name,
         "started_at": local_now.isoformat(timespec="seconds"),
         "completed_at": dt.datetime.now(config.timezone).isoformat(timespec="seconds"),
         "timezone": config.timezone_name,
-        "source_name": source.name,
         "device_id": source.device_id,
         "cutoff_date": plan.cutoff_date.isoformat(),
         "date_range": [plan.dates[0].isoformat(), plan.dates[-1].isoformat()],
@@ -688,7 +689,7 @@ def process_source(
             )
 
     return SourceRunResult(
-        source_name=source.name,
+        profile_name=source.name,
         device_id=source.device_id,
         dates=len(plan.dates),
         copied_files=copied_files,
@@ -702,21 +703,19 @@ def process_source(
 
 def run_pipeline(
     config: PipelineConfig,
-    mode: str,
     *,
     apply: bool,
     now: dt.datetime | None = None,
 ) -> tuple[list[SourcePlan], list[SourceRunResult]]:
-    canonical_mode = "ingest" if mode == "run" else mode
-    plans = plans_for_mode(config, canonical_mode, now=now)
+    plans = plans_for_ingest(config, now=now)
     if not apply:
         return plans, []
     return plans, [
-        process_source(config, plan, mode=canonical_mode, now=now) for plan in plans
+        process_source(config, plan, mode="ingest", now=now) for plan in plans
     ]
 
 
-def archive_months(source: SourceConfig) -> Iterator[tuple[int, int]]:
+def archive_months(source: ProfileConfig) -> Iterator[tuple[int, int]]:
     rec_root = source.archive_root / "Rec"
     if not rec_root.is_dir():
         return
@@ -729,7 +728,7 @@ def archive_months(source: SourceConfig) -> Iterator[tuple[int, int]]:
 
 
 def _expected_month_rows(
-    source: SourceConfig,
+    source: ProfileConfig,
     year: int,
     month: int,
 ) -> tuple[Iterator[list[object]], Iterator[list[object]], int, int]:
@@ -796,40 +795,32 @@ def _compare_csv(
 
 def verify_config(config: PipelineConfig) -> list[dict]:
     results: list[dict] = []
-    seen: set[tuple[str, Path]] = set()
-    for source in config.sources:
-        key = (source.device_id, source.archive_root)
-        if key in seen:
-            continue
-        seen.add(key)
-        for year, month in archive_months(source):
-            events, daily, expected_events, expected_daily = _expected_month_rows(
-                source, year, month
+    source = config.profile
+    for year, month in archive_months(source):
+        events, daily, expected_events, expected_daily = _expected_month_rows(
+            source, year, month
+        )
+        device_root = config.processed_data_root / source.device_id
+        event_path = (
+            device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
+        )
+        daily_path = (
+            device_root / "DailyUsage" / f"{year:04d}" / f"{month:02d}.csv"
+        )
+        actual_events = _compare_csv(event_path, INPUT_EVENTS_HEADER, events)
+        actual_daily = _compare_csv(daily_path, DAILY_USAGE_HEADER, daily)
+        if actual_events != expected_events or actual_daily != expected_daily:
+            raise ParseError(
+                f"{source.device_id} {year:04d}-{month:02d}: "
+                "row count verification failed"
             )
-            device_root = config.processed_data_root / source.device_id
-            event_path = (
-                device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
-            )
-            daily_path = (
-                device_root / "DailyUsage" / f"{year:04d}" / f"{month:02d}.csv"
-            )
-            actual_events = _compare_csv(
-                event_path, INPUT_EVENTS_HEADER, events
-            )
-            actual_daily = _compare_csv(
-                daily_path, DAILY_USAGE_HEADER, daily
-            )
-            if actual_events != expected_events or actual_daily != expected_daily:
-                raise ParseError(
-                    f"{source.device_id} {year:04d}-{month:02d}: "
-                    "row count verification failed"
-                )
-            results.append(
-                {
-                    "device_id": source.device_id,
-                    "month": f"{year:04d}-{month:02d}",
-                    "input_events": actual_events,
-                    "daily_usage": actual_daily,
-                }
-            )
+        results.append(
+            {
+                "profile": source.name,
+                "device_id": source.device_id,
+                "month": f"{year:04d}-{month:02d}",
+                "input_events": actual_events,
+                "daily_usage": actual_daily,
+            }
+        )
     return results

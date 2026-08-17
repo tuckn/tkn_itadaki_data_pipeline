@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import PipelineConfig, SourceConfig
+from .config import PipelineConfig, ProfileConfig
 from .pipeline import sha256_file
 
-GENERATOR_VERSION = "0.3.0"
-MANIFEST_SCHEMA_VERSION = 1
+GENERATOR_VERSION = "0.4.0"
+MANIFEST_SCHEMA_VERSION = 2
 ALL_DEVICES = "all_devices"
 
 WEEKLY_SUMMARY_HEADER = [
@@ -132,15 +132,7 @@ def _weeks_between(first: dt.date, last: dt.date) -> list[Week]:
     return result
 
 
-def _active_ingest_sources(config: PipelineConfig) -> list[SourceConfig]:
-    return [
-        source
-        for source in config.sources
-        if any(mode in {"ingest", "run"} for mode in source.modes)
-    ]
-
-
-def _latest_complete_manifest(source: SourceConfig) -> dict[str, Any] | None:
+def _latest_complete_manifest(source: ProfileConfig) -> dict[str, Any] | None:
     root = source.archive_root / "_manifests"
     candidates: list[dict[str, Any]] = []
     if not root.is_dir():
@@ -150,9 +142,12 @@ def _latest_complete_manifest(source: SourceConfig) -> dict[str, Any] | None:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if (
                 payload.get("status") == "complete"
-                and payload.get("mode") in {"ingest", "run"}
+                and payload.get("mode") == "ingest"
                 and payload.get("cutoff_date")
-                and payload.get("source_name", source.name) == source.name
+                and payload.get(
+                    "profile_name", payload.get("source_name", source.name)
+                )
+                == source.name
                 and payload.get("device_id", source.device_id) == source.device_id
             ):
                 dt.date.fromisoformat(str(payload["cutoff_date"]))
@@ -172,26 +167,23 @@ def _latest_complete_manifest(source: SourceConfig) -> dict[str, Any] | None:
 
 
 def _watermark(config: PipelineConfig) -> tuple[dt.date, list[dict[str, str]]]:
-    sources = _active_ingest_sources(config)
-    if not sources:
-        raise ValueError("No active ingest source is configured")
+    source = config.profile
     details: list[dict[str, str]] = []
-    for source in sources:
-        manifest = _latest_complete_manifest(source)
-        if manifest is None:
-            raise ValueError(
-                f"No complete ingest manifest for source {source.name!r}; "
-                "run 'tkn-itadaki-pipeline ingest --apply' successfully first"
-            )
-        details.append(
-            {
-                "source_name": source.name,
-                "device_id": source.device_id,
-                "cutoff_date": str(manifest["cutoff_date"]),
-                "batch_id": str(manifest.get("batch_id", "")),
-                "mode": str(manifest.get("mode", "")),
-            }
+    manifest = _latest_complete_manifest(source)
+    if manifest is None:
+        raise ValueError(
+            f"No complete ingest manifest for profile {source.name!r}; "
+            "run 'tkn-itadaki-pipeline ingest' successfully first"
         )
+    details.append(
+        {
+            "profile_name": source.name,
+            "device_id": source.device_id,
+            "cutoff_date": str(manifest["cutoff_date"]),
+            "batch_id": str(manifest.get("batch_id", "")),
+            "mode": str(manifest.get("mode", "")),
+        }
+    )
     cutoff = min(dt.date.fromisoformat(item["cutoff_date"]) for item in details)
     return cutoff, details
 
@@ -790,7 +782,13 @@ def _weekly_html(week: Week, data: dict[str, Any]) -> str:
 </main></body></html>"""
 
 
-def _write_week(plan: WeekPlan, data: dict[str, Any], config: PipelineConfig, watermark: dt.date, watermark_sources: list[dict[str, str]]) -> dict[str, Any]:
+def _write_week(
+    plan: WeekPlan,
+    data: dict[str, Any],
+    config: PipelineConfig,
+    watermark: dt.date,
+    watermark_profiles: list[dict[str, str]],
+) -> dict[str, Any]:
     assert config.weekly_mart_root is not None
     directory = config.weekly_mart_root / "weeks" / plan.week.week_id
     payloads = {
@@ -823,7 +821,7 @@ def _write_week(plan: WeekPlan, data: dict[str, Any], config: PipelineConfig, wa
         "week_end_date": plan.week.end.isoformat(),
         "timezone": config.timezone_name,
         "watermark_cutoff_date": watermark.isoformat(),
-        "watermark_sources": watermark_sources,
+        "watermark_profiles": watermark_profiles,
         "input_fingerprints": list(plan.fingerprints),
         "row_counts": {
             "weekly_summary": len(data["summary"]),
@@ -1247,7 +1245,7 @@ def _write_root(
     weeks: list[Week],
     source_files: list[SourceFile],
     watermark: dt.date,
-    watermark_sources: list[dict[str, str]],
+    watermark_profiles: list[dict[str, str]],
     first: dt.date,
     last: dt.date,
     progress: Callable[[str], None] | None,
@@ -1268,7 +1266,7 @@ def _write_root(
         "generator_version": GENERATOR_VERSION,
         "timezone": config.timezone_name,
         "watermark_cutoff_date": watermark.isoformat(),
-        "watermark_sources": watermark_sources,
+        "watermark_profiles": watermark_profiles,
         "week_count": len(rows),
         "week_range": [rows[0][0], rows[-1][0]] if rows else None,
         "outputs": {
@@ -1303,7 +1301,7 @@ def build_weekly(
         raise ValueError("weekly_mart_path is required for build-weekly")
     if progress:
         progress("Reading ingest watermark")
-    cutoff, watermark_sources = _watermark(config)
+    cutoff, watermark_profiles = _watermark(config)
     eligible_end = cutoff - dt.timedelta(days=cutoff.isoweekday() % 7)
     if progress:
         progress("Scanning processed monthly CSV files")
@@ -1354,7 +1352,7 @@ def build_weekly(
                     f"{plan.week.week_id} ({plan.status})"
                 )
             data = _aggregate(plan, device_bounds)
-            _write_week(plan, data, config, cutoff, watermark_sources)
+            _write_week(plan, data, config, cutoff, watermark_profiles)
             generated.append(plan.week.week_id)
         if progress:
             progress("Building calendar month/year reports and root index")
@@ -1363,7 +1361,7 @@ def build_weekly(
             weeks,
             files,
             cutoff,
-            watermark_sources,
+            watermark_profiles,
             earliest,
             eligible_end,
             progress,
@@ -1396,5 +1394,5 @@ def build_weekly(
         ],
         "generated_weeks": generated,
         "index": root_result,
-        "watermark_sources": watermark_sources,
+        "watermark_profiles": watermark_profiles,
     }

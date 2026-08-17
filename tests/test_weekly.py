@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from itadaki_pipeline.config import PipelineConfig, SourceConfig
+from itadaki_pipeline.config import PipelineConfig, ProfileConfig
 from itadaki_pipeline.pipeline import DAILY_USAGE_HEADER, INPUT_EVENTS_HEADER
 from itadaki_pipeline.weekly import (
     DAILY_ACTIVITY_HEADER,
@@ -143,7 +143,7 @@ def _config(tmp_path: Path) -> PipelineConfig:
         json.dumps(
             {
                 "status": "complete",
-                "mode": "run",
+                "mode": "ingest",
                 "source_name": "current",
                 "device_id": "PC-B",
                 "cutoff_date": "2026-04-12",
@@ -152,21 +152,22 @@ def _config(tmp_path: Path) -> PipelineConfig:
         ),
         encoding="utf-8",
     )
-    source = SourceConfig(
+    profile = ProfileConfig(
         name="current",
         device_id="PC-B",
+        timezone_name="Asia/Tokyo",
+        timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
         rec_dir=tmp_path / "Rec",
         archive_root=archive,
-        modes=("ingest",),
         delete_after_success=False,
     )
     return PipelineConfig(
         config_path=tmp_path / "config.yaml",
-        timezone_name="Asia/Tokyo",
-        timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
         processed_data_root=processed,
         log_dir=tmp_path / "logs",
-        sources=(source,),
+        default_profile_name="current",
+        selected_profile_name="current",
+        profiles=(profile,),
         weekly_mart_root=tmp_path / "mart",
     )
 
@@ -209,6 +210,9 @@ def test_build_weekly_apply_quality_contract_and_idempotency(tmp_path: Path) -> 
     keys = _read_csv(week / "key_frequency.csv")
     assert {row[4] for row in keys[1:] if row[1] == "all_devices"} == {"A", "B"}
     manifest = json.loads((week / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
+    assert manifest["watermark_profiles"][0]["profile_name"] == "current"
+    assert "watermark_sources" not in manifest
     assert manifest["quality"]["event_datetime_date_mismatch_count"] == 1
     assert manifest["quality"]["hourly_excluded_event_count"] == 1
     assert manifest["quality"]["key_moc_mismatch_date_count"] == 1
@@ -312,7 +316,7 @@ def test_missing_watermark_stops_before_mart_write(tmp_path: Path) -> None:
     for path in (tmp_path / "archive" / "_manifests").rglob("*.json"):
         path.unlink()
 
-    with pytest.raises(ValueError, match="ingest --apply"):
+    with pytest.raises(ValueError, match="tkn-itadaki-pipeline ingest"):
         build_weekly(config, apply=True)
     assert not config.weekly_mart_root.exists()
 

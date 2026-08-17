@@ -8,7 +8,7 @@ from itadaki_pipeline.config import resolve_config
 from itadaki_pipeline.paths import user_paths
 
 
-def test_config_precedence_and_cwd_relative_paths(
+def test_config_precedence_profile_selection_and_cwd_relative_paths(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -17,12 +17,13 @@ def test_config_precedence_and_cwd_relative_paths(
     global_config.write_text(
         "\n".join(
             [
-                "timezone: Asia/Tokyo",
+                "default_profile: global",
                 "processed_data_path: global-processed-data",
                 "weekly_mart_path: global-weekly-mart",
-                "sources:",
+                "profiles:",
                 "  - name: global",
                 "    device_id: Global PC",
+                "    timezone: Asia/Tokyo",
                 "    source_path: global-source",
                 "    destination_path: global-destination",
             ]
@@ -44,9 +45,11 @@ def test_config_precedence_and_cwd_relative_paths(
     explicit.write_text(
         "\n".join(
             [
-                "sources:",
+                "default_profile: explicit",
+                "profiles:",
                 "  - name: explicit",
                 "    device_id: Explicit PC",
+                "    timezone: Asia/Tokyo",
                 "    source_path: source",
                 "    destination_path: destination",
             ]
@@ -58,9 +61,10 @@ def test_config_precedence_and_cwd_relative_paths(
 
     assert resolved.config.processed_data_root == tmp_path / "cwd-processed-data"
     assert resolved.config.weekly_mart_root == tmp_path / "global-weekly-mart"
-    assert resolved.config.sources[0].rec_dir == tmp_path / "source"
-    assert resolved.config.sources[0].archive_root == tmp_path / "destination"
-    assert resolved.sources == (
+    assert resolved.config.profile.rec_dir == tmp_path / "source"
+    assert resolved.config.profile.archive_root == tmp_path / "destination"
+    assert resolved.config.selected_profile_name == "explicit"
+    assert resolved.config_sources == (
         str(global_config),
         str(cwd_config),
         str(explicit),
@@ -68,7 +72,53 @@ def test_config_precedence_and_cwd_relative_paths(
     assert resolved.paths == user_paths()
 
 
-def test_legacy_run_mode_is_normalized(tmp_path: Path, monkeypatch) -> None:
+def test_explicit_profiles_replace_legacy_sources_from_lower_layer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    global_config = tmp_path / "global.yaml"
+    global_config.write_text(
+        "\n".join(
+            [
+                "timezone: Asia/Tokyo",
+                "processed_data_path: old-processed",
+                "sources:",
+                "  - name: old",
+                "    device_id: Old PC",
+                "    source_path: old-source",
+                "    destination_path: old-destination",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.global_config_path",
+        lambda: global_config,
+    )
+    explicit = tmp_path / "explicit.yaml"
+    explicit.write_text(
+        "\n".join(
+            [
+                "default_profile: current",
+                "processed_data_path: processed",
+                "profiles:",
+                "  - name: current",
+                "    device_id: Current PC",
+                "    timezone: Asia/Tokyo",
+                "    source_path: source",
+                "    destination_path: destination",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = resolve_config(cwd=tmp_path, explicit_config=explicit)
+
+    assert resolved.config.selected_profile_name == "current"
+    assert resolved.config.profile.device_id == "Current PC"
+
+
+def test_removed_sources_key_is_rejected(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "itadaki_pipeline.config.global_config_path",
         lambda: tmp_path / "missing-global.yaml",
@@ -83,16 +133,69 @@ def test_legacy_run_mode_is_normalized(tmp_path: Path, monkeypatch) -> None:
                 "    device_id: Example PC",
                 "    source_path: source",
                 "    destination_path: destination",
-                "    modes: [backfill, run]",
             ]
         ),
         encoding="utf-8",
     )
 
-    resolved = resolve_config(cwd=tmp_path, explicit_config=config)
+    with pytest.raises(ValueError, match="sources.*no longer supported"):
+        resolve_config(cwd=tmp_path, explicit_config=config)
 
-    assert resolved.config.sources[0].modes == ("backfill", "ingest")
-    assert resolved.config.sources[0].legacy_run_mode is True
+
+def test_unknown_profile_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.global_config_path",
+        lambda: tmp_path / "missing-global.yaml",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "default_profile: current",
+                "processed_data_path: processed-data",
+                "profiles:",
+                "  - name: current",
+                "    device_id: Current PC",
+                "    timezone: Asia/Tokyo",
+                "    source_path: source",
+                "    destination_path: destination",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown profile 'missing'.*current"):
+        resolve_config(
+            cwd=tmp_path,
+            explicit_config=config,
+            profile_name="missing",
+        )
+
+
+def test_removed_modes_key_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.global_config_path",
+        lambda: tmp_path / "missing-global.yaml",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join(
+            [
+                "default_profile: current",
+                "processed_data_path: processed-data",
+                "profiles:",
+                "  - name: current",
+                "    device_id: Current PC",
+                "    source_path: source",
+                "    destination_path: destination",
+                "    modes: [ingest]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="modes.*no longer supported"):
+        resolve_config(cwd=tmp_path, explicit_config=config)
 
 
 def test_non_yaml_config_is_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -123,7 +226,8 @@ def test_processed_data_path_is_required(tmp_path: Path, monkeypatch) -> None:
     explicit.write_text(
         "\n".join(
             [
-                "sources:",
+                "default_profile: current",
+                "profiles:",
                 "  - name: current",
                 "    device_id: Current PC",
                 "    source_path: source",
@@ -147,7 +251,9 @@ def test_bronze_path_is_rejected(tmp_path: Path, monkeypatch) -> None:
         "\n".join(
             [
                 "bronze_path: old-output",
-                "sources:",
+                "default_profile: current",
+                "processed_data_path: processed-data",
+                "profiles:",
                 "  - name: current",
                 "    device_id: Current PC",
                 "    source_path: source",

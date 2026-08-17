@@ -19,7 +19,7 @@ if ($UvPath) {
 else {
     $uv = (Get-Command uv -ErrorAction Stop).Source
 }
-$arguments = 'run --frozen tkn-itadaki-pipeline ingest --apply'
+$arguments = 'run --frozen tkn-itadaki-pipeline ingest'
 if ($ConfigPath) {
     $config = (Resolve-Path -LiteralPath $ConfigPath).Path
     $arguments += " --config `"$config`""

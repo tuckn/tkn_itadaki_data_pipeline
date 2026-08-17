@@ -5,9 +5,10 @@ import datetime as dt
 import shutil
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from itadaki_pipeline.config import PipelineConfig, SourceConfig
+from itadaki_pipeline.config import PipelineConfig, ProfileConfig
 from itadaki_pipeline.parser import ParseError, iter_key_file, parse_moc_file
 from itadaki_pipeline.pipeline import (
     DAILY_USAGE_HEADER,
@@ -61,21 +62,22 @@ class PipelineTests(unittest.TestCase):
         shutil.copytree(FIXTURE_REC, self.rec_dir)
         self.archive = self.root / "archive"
         self.processed_data = self.root / "processed-data"
-        self.source = SourceConfig(
+        self.source = ProfileConfig(
             name="fixture",
             device_id="Example PC",
+            timezone_name="Asia/Tokyo",
+            timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
             rec_dir=self.rec_dir,
             archive_root=self.archive,
-            modes=("backfill", "run"),
             delete_after_success=True,
         )
         self.config = PipelineConfig(
             config_path=self.root / "config.yaml",
-            timezone_name="Asia/Tokyo",
-            timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
             processed_data_root=self.processed_data,
             log_dir=self.root / "logs",
-            sources=(self.source,),
+            default_profile_name="fixture",
+            selected_profile_name="fixture",
+            profiles=(self.source,),
         )
         self.now = dt.datetime(
             2026, 4, 5, 3, 0, tzinfo=self.config.timezone
@@ -85,22 +87,30 @@ class PipelineTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_dry_run_apply_verify_and_rerun(self) -> None:
-        plans, results = run_pipeline(
-            self.config, "backfill", apply=False, now=self.now
-        )
+        plans, results = run_pipeline(self.config, apply=False, now=self.now)
         self.assertEqual(1, len(plans[0].dates))
         self.assertEqual([], results)
         self.assertTrue((self.rec_dir / "Key" / "20260404.rec").exists())
         self.assertFalse(self.archive.exists())
 
-        _, results = run_pipeline(
-            self.config, "backfill", apply=True, now=self.now
-        )
+        _, results = run_pipeline(self.config, apply=True, now=self.now)
         result = results[0]
         self.assertEqual(4, result.copied_files)
         self.assertEqual(2, result.output_updates)
         self.assertEqual(4, result.deleted_files)
         self.assertTrue(result.manifest_path and result.manifest_path.exists())
+        self.assertIn(
+            '"mode": "ingest"',
+            result.manifest_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"profile_name": "fixture"',
+            result.manifest_path.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"schema_version": 2',
+            result.manifest_path.read_text(encoding="utf-8"),
+        )
         self.assertFalse((self.rec_dir / "Key" / "20260404.rec").exists())
 
         event_csv = (
@@ -129,29 +139,26 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(26, verified[0]["input_events"])
         self.assertEqual(1, verified[0]["daily_usage"])
 
-        plans, results = run_pipeline(
-            self.config, "run", apply=True, now=self.now
-        )
+        plans, results = run_pipeline(self.config, apply=True, now=self.now)
         self.assertEqual(0, len(plans[0].dates))
         self.assertTrue(
             results[0].manifest_path and results[0].manifest_path.exists()
         )
         manifest = results[0].manifest_path.read_text(encoding="utf-8")
         self.assertIn('"status": "complete"', manifest)
+        self.assertIn('"mode": "ingest"', manifest)
         self.assertIn('"cutoff_date": "2026-04-04"', manifest)
 
     def test_preserved_source_rerun_does_not_rewrite_outputs(self) -> None:
-        preserved = SourceConfig(
+        preserved = ProfileConfig(
             **{
                 **self.source.__dict__,
                 "delete_after_success": False,
             }
         )
-        config = PipelineConfig(
-            **{**self.config.__dict__, "sources": (preserved,)}
-        )
-        run_pipeline(config, "backfill", apply=True, now=self.now)
-        _, results = run_pipeline(config, "backfill", apply=True, now=self.now)
+        config = replace(self.config, profiles=(preserved,))
+        run_pipeline(config, apply=True, now=self.now)
+        _, results = run_pipeline(config, apply=True, now=self.now)
         self.assertEqual(0, results[0].copied_files)
         self.assertEqual(0, results[0].output_updates)
         self.assertEqual(2, results[0].output_unchanged)
@@ -160,6 +167,31 @@ class PipelineTests(unittest.TestCase):
     def test_current_day_is_excluded(self) -> None:
         plan = discover_source(self.source, dt.date(2026, 4, 3))
         self.assertEqual((), plan.dates)
+
+    def test_selected_profile_is_the_only_ingest_scope(self) -> None:
+        historical = replace(
+            self.source,
+            name="historical",
+            device_id="Historical PC",
+        )
+        current = replace(
+            self.source,
+            name="current",
+        )
+        config = replace(
+            self.config,
+            default_profile_name="current",
+            selected_profile_name="historical",
+            profiles=(historical, current),
+        )
+
+        plans, _ = run_pipeline(
+            config,
+            apply=False,
+            now=self.now,
+        )
+
+        self.assertEqual(["historical"], [plan.source.name for plan in plans])
 
     def test_missing_series_is_rejected(self) -> None:
         (self.rec_dir / "Pow" / "20260404.rec").unlink()
@@ -179,7 +211,9 @@ class PipelineTests(unittest.TestCase):
         destination.parent.mkdir(parents=True)
         destination.write_bytes(b"\x00\x00\x00\x00")
         with self.assertRaises(ParseError):
-            run_pipeline(self.config, "backfill", apply=True, now=self.now)
+            run_pipeline(self.config, apply=False, now=self.now)
+        with self.assertRaises(ParseError):
+            run_pipeline(self.config, apply=True, now=self.now)
         self.assertTrue((self.rec_dir / "MoC" / "20260404.rec").exists())
 
 if __name__ == "__main__":
