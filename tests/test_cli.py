@@ -100,6 +100,50 @@ def test_config_show_command() -> None:
     assert args.command_profile == "current"
 
 
+def test_config_init_emits_status_and_absolute_path(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    destination = tmp_path / "user" / "config.yaml"
+    monkeypatch.setattr(
+        "itadaki_pipeline.cli.initialize_user_config",
+        lambda: (destination.resolve(), "created"),
+    )
+
+    assert main(["config", "init"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "status": "created",
+        "command": "config init",
+        "config_path": str(destination.resolve()),
+    }
+
+
+def test_config_init_does_not_resolve_existing_configuration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    destination = tmp_path / "config.yaml"
+    monkeypatch.setattr(
+        "itadaki_pipeline.cli.initialize_user_config",
+        lambda: (destination.resolve(), "created"),
+    )
+
+    def unexpected_resolve(**_):
+        raise AssertionError("config init must not resolve configuration")
+
+    monkeypatch.setattr("itadaki_pipeline.cli.resolve_config", unexpected_resolve)
+
+    assert main(["config", "init"]) == 0
+
+
+def test_config_init_rejects_explicit_config(capsys) -> None:
+    assert main(["--config", "other.yaml", "config", "init"]) == 1
+    assert "--config cannot be combined with config init" in capsys.readouterr().err
+
+
 def test_config_show_emits_processed_data_path(
     tmp_path: Path,
     monkeypatch,

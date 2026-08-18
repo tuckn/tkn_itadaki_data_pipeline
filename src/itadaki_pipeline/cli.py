@@ -11,7 +11,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from .config import public_config, resolve_config
+from .config import initialize_user_config, public_config, resolve_config
 from .pipeline import run_pipeline, verify_config
 from .weekly import build_weekly
 
@@ -81,6 +81,14 @@ def _parser() -> argparse.ArgumentParser:
     config_subparsers = config_parser.add_subparsers(
         dest="config_command",
         required=True,
+    )
+    config_subparsers.add_parser(
+        "init",
+        help="Create the user-global config from the packaged template.",
+        description=(
+            "Create ~/.tkn/itadaki_data_pipeline/config.yaml. An identical file is "
+            "left unchanged; an edited file is never overwritten."
+        ),
     )
     config_show_parser = config_subparsers.add_parser(
         "show",
@@ -184,6 +192,25 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _close_file_logs()
     try:
+        if args.command == "config" and args.config_command == "init":
+            if args.config is not None:
+                raise ValueError("--config cannot be combined with config init")
+            if args.profile is not None:
+                raise ValueError("--profile cannot be combined with config init")
+            path, status = initialize_user_config()
+            print(
+                json.dumps(
+                    {
+                        "status": status,
+                        "command": "config init",
+                        "config_path": str(path),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+
         explicit_config = getattr(args, "command_config", None) or args.config
         profile_name = getattr(args, "command_profile", None) or args.profile
         resolved = resolve_config(

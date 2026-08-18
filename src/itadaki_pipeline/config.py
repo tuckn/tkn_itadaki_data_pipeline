@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .paths import CONFIG_FILENAME, AppPaths, runtime_temp_base, user_paths
+
+DEFAULT_CONFIG_RESOURCE = "resources/config.example.yaml"
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,56 @@ class ResolvedConfig:
 
 def global_config_path() -> Path:
     return user_paths().config_file
+
+
+def initialize_user_config(*, target: Path | None = None) -> tuple[Path, str]:
+    """Create the user-global config without overwriting edited settings."""
+    resource = files("itadaki_pipeline").joinpath(DEFAULT_CONFIG_RESOURCE)
+    try:
+        payload = resource.read_bytes()
+    except (OSError, FileNotFoundError) as exc:
+        raise RuntimeError(
+            f"Packaged config template is unavailable: {DEFAULT_CONFIG_RESOURCE}: {exc}"
+        ) from exc
+
+    try:
+        template = yaml.safe_load(payload.decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Packaged config template is invalid: {exc}") from exc
+    if not isinstance(template, dict):
+        raise RuntimeError("Packaged config template must contain a mapping")
+
+    destination = (target or global_config_path()).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError as exc:
+        try:
+            existing = destination.read_bytes()
+        except OSError as read_exc:
+            raise OSError(
+                f"Cannot read existing configuration {destination}: {read_exc}"
+            ) from read_exc
+        if existing == payload:
+            return destination, "unchanged"
+        raise FileExistsError(
+            "Config already exists and differs from the packaged template; "
+            f"refusing to overwrite it: {destination}"
+        ) from exc
+
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return destination, "created"
 
 
 def cwd_config_path(cwd: Path) -> Path:

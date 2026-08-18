@@ -63,9 +63,14 @@ dependency、package metadata、CLI entry pointを変更した場合、または
 ユーザー単位の設定ファイルを作成します。
 
 ```console
-New-Item -ItemType Directory -Force "$HOME\.tkn\itadaki_data_pipeline"
-Copy-Item ".\.tkn\config.example.yaml" "$HOME\.tkn\itadaki_data_pipeline\config.yaml"
+tkn-itadaki-pipeline config init
 ```
+
+このコマンドは、packageに含まれる公開用テンプレートから
+`~/.tkn/itadaki_data_pipeline/config.yaml`を作成し、`created`と絶対パスをJSONで
+表示します。同じ内容で再実行した場合は`unchanged`となり、ファイルを書き換えません。
+既存ファイルがテンプレートと異なる場合は、編集済み設定を保護するためエラーで停止します。
+network access、データ移動、ログ作成は行いません。
 
 作成した`config.yaml`を開き、使用環境に合わせてパスと端末名を変更します。
 
@@ -101,7 +106,7 @@ profiles:
 別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はprofileごとに明示します。
 `processed_data_path`と`weekly_mart_path`はprofile間で共有し、処理済みデータは
 `device_id`別に保存します。
-公開用の全設定例は[`.tkn/config.example.yaml`](.tkn/config.example.yaml)を参照してください。
+`config init`が作成するファイルには、公開用の全設定例が含まれています。
 
 以前の`source`選択用設定である`sources`と`modes`は使用できません。各`sources`
 entryを`profiles`へ移し、`timezone`をprofile内へ移動して、`default_profile`を
@@ -381,10 +386,11 @@ Itadaki本体、大量の`.rec`、生成済みCSVは含めません。
 ```text
 .
 ├── src/itadaki_pipeline/
+│   └── resources/
+│       └── config.example.yaml
 ├── tests/
 │   └── fixtures/
 ├── scripts/
-├── .tkn/config.example.yaml
 ├── pyproject.toml
 └── uv.lock
 ```

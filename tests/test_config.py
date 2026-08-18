@@ -4,8 +4,41 @@ from pathlib import Path
 
 import pytest
 
-from itadaki_pipeline.config import resolve_config
+from itadaki_pipeline.config import initialize_user_config, resolve_config
 from itadaki_pipeline.paths import user_paths
+
+
+def test_config_init_creates_user_global_config(tmp_path: Path) -> None:
+    destination = tmp_path / ".tkn" / "itadaki_data_pipeline" / "config.yaml"
+
+    path, status = initialize_user_config(target=destination)
+
+    assert path == destination.resolve()
+    assert status == "created"
+    assert "default_profile: current-pc" in path.read_text(encoding="utf-8")
+
+
+def test_config_init_leaves_identical_config_unchanged(tmp_path: Path) -> None:
+    destination = tmp_path / "config.yaml"
+    path, first_status = initialize_user_config(target=destination)
+    original_stat = path.stat()
+
+    same_path, second_status = initialize_user_config(target=destination)
+
+    assert first_status == "created"
+    assert same_path == path
+    assert second_status == "unchanged"
+    assert path.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+
+def test_config_init_protects_edited_config(tmp_path: Path) -> None:
+    destination = tmp_path / "config.yaml"
+    destination.write_text("user: edited\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        initialize_user_config(target=destination)
+
+    assert destination.read_text(encoding="utf-8") == "user: edited\n"
 
 
 def test_config_precedence_profile_selection_and_cwd_relative_paths(
