@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from itadaki_pipeline.cli import _parser, main
+from itadaki_pipeline.cli import _open_report, _parser, main
 from itadaki_pipeline.config import PipelineConfig, ProfileConfig, ResolvedConfig
 from itadaki_pipeline.paths import user_paths
 
@@ -74,6 +74,31 @@ def test_change_commands_accept_explicit_dry_run() -> None:
 
     assert default.dry_run is False
     assert dry_run.dry_run is True
+
+
+def test_build_weekly_opens_by_default_and_accepts_no_open() -> None:
+    default = _parser().parse_args(["build-weekly"])
+    suppressed = _parser().parse_args(["build-weekly", "--no-open"])
+
+    assert default.no_open is False
+    assert suppressed.no_open is True
+
+
+def test_open_report_uses_default_browser_with_file_uri(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    report = tmp_path / "mart" / "index.html"
+    opened: list[tuple[str, int]] = []
+
+    def fake_open(url: str, new: int = 0) -> bool:
+        opened.append((url, new))
+        return True
+
+    monkeypatch.setattr("itadaki_pipeline.cli.webbrowser.open", fake_open)
+
+    assert _open_report(report) is True
+    assert opened == [(report.resolve().as_uri(), 2)]
 
 
 def test_apply_option_is_removed() -> None:
@@ -234,6 +259,11 @@ def test_build_weekly_prints_progress_summary_and_result_paths(
 ) -> None:
     resolved = _resolved_config(tmp_path, weekly=True)
     monkeypatch.setattr("itadaki_pipeline.cli.resolve_config", lambda **_: resolved)
+    opened: list[Path] = []
+    monkeypatch.setattr(
+        "itadaki_pipeline.cli._open_report",
+        lambda path: opened.append(path) is None,
+    )
 
     def fake_build(config, *, apply, progress):
         progress("Planning fixture weeks")
@@ -266,6 +296,74 @@ def test_build_weekly_prints_progress_summary_and_result_paths(
     result_path = Path(result_line.split("Result JSON:", 1)[1].strip())
     assert result_path.is_file()
     assert json.loads(result_path.read_text(encoding="utf-8"))["apply"] is True
+    assert opened == [resolved.config.weekly_mart_root / "index.html"]
+    assert "Opened report:" in captured.out
+
+
+def test_build_weekly_no_open_suppresses_browser(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    resolved = _resolved_config(tmp_path, weekly=True)
+    monkeypatch.setattr("itadaki_pipeline.cli.resolve_config", lambda **_: resolved)
+
+    def fake_build(config, *, apply, progress):
+        return {
+            "apply": apply,
+            "mart_path": str(config.weekly_mart_root),
+            "candidate_week_count": 0,
+            "missing_week_count": 0,
+            "stale_week_count": 0,
+            "unchanged_week_count": 0,
+            "weeks_to_generate": [],
+            "generated_weeks": [],
+            "index": {"month_report_count": 0, "year_report_count": 0},
+        }
+
+    def unexpected_open(_path):
+        raise AssertionError("--no-open must not launch a browser")
+
+    monkeypatch.setattr("itadaki_pipeline.cli.build_weekly", fake_build)
+    monkeypatch.setattr("itadaki_pipeline.cli._open_report", unexpected_open)
+
+    assert main(["build-weekly", "--no-open"]) == 0
+    captured = capsys.readouterr()
+    assert "Browser opening suppressed by --no-open." in captured.out
+    assert f"Report: {resolved.config.weekly_mart_root / 'index.html'}" in captured.out
+
+
+def test_build_weekly_browser_failure_warns_without_failing_build(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    resolved = _resolved_config(tmp_path, weekly=True)
+    monkeypatch.setattr("itadaki_pipeline.cli.resolve_config", lambda **_: resolved)
+
+    def fake_build(config, *, apply, progress):
+        return {
+            "apply": apply,
+            "mart_path": str(config.weekly_mart_root),
+            "candidate_week_count": 0,
+            "missing_week_count": 0,
+            "stale_week_count": 0,
+            "unchanged_week_count": 0,
+            "weeks_to_generate": [],
+            "generated_weeks": [],
+            "index": {"month_report_count": 0, "year_report_count": 0},
+        }
+
+    monkeypatch.setattr("itadaki_pipeline.cli.build_weekly", fake_build)
+    monkeypatch.setattr(
+        "itadaki_pipeline.cli._open_report",
+        lambda _path: False,
+    )
+
+    assert main(["build-weekly"]) == 0
+    captured = capsys.readouterr()
+    assert "[SUCCESS] build-weekly completed." in captured.out
+    assert "[WARNING] Could not open the report" in captured.err
 
 
 def test_build_weekly_dry_run_does_not_create_logs_or_result_reports(
@@ -294,6 +392,12 @@ def test_build_weekly_dry_run_does_not_create_logs_or_result_reports(
         }
 
     monkeypatch.setattr("itadaki_pipeline.cli.build_weekly", fake_build)
+    monkeypatch.setattr(
+        "itadaki_pipeline.cli._open_report",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("dry-run must not launch a browser")
+        ),
+    )
 
     assert main(["build-weekly", "--dry-run"]) == 0
     captured = capsys.readouterr()

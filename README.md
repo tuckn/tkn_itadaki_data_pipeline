@@ -173,6 +173,14 @@ tkn-itadaki-pipeline build-weekly --dry-run
 tkn-itadaki-pipeline build-weekly
 ```
 
+通常実行が正常に終了すると、生成済みの`index.html`をOS既定のブラウザーで
+開きます。ブラウザーを開かない場合は`--no-open`を指定します。`--dry-run`では
+ブラウザーを開きません。
+
+```console
+tkn-itadaki-pipeline build-weekly --no-open
+```
+
 初回は最古のsource rowを含む週から処理し、以後は入力変更、出力欠損、hash
 不一致がある完全週だけを再生成します。記録のない週も出力し、活動0とは解釈せず
 `observed_date_count: 0`、`source rowなし`と表示します。
@@ -359,8 +367,11 @@ uv run --frozen tkn-itadaki-pipeline ingest
 自動登録しません。
 
 ```text
-uv run --frozen tkn-itadaki-pipeline build-weekly
+uv run --frozen tkn-itadaki-pipeline build-weekly --no-open
 ```
+
+定期実行ではブラウザーを起動しないよう`--no-open`を指定しています。対話的に
+実行する場合は、オプションを省略すると生成後の索引ページが開きます。
 
 分析上の1週間はISO 8601の月曜日～日曜日です。日曜日の03:00では当日分が
 watermarkに含まれず、直前のISO週がまだ完全週にならないことがあります。

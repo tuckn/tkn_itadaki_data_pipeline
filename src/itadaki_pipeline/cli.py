@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import uuid
+import webbrowser
 from pathlib import Path
 
 from .config import initialize_user_config, public_config, resolve_config
@@ -77,6 +78,15 @@ def _parser() -> argparse.ArgumentParser:
                     "This pipeline does not use network services or generative AI."
                 ),
             )
+        if command == "build-weekly":
+            subparser.add_argument(
+                "--no-open",
+                action="store_true",
+                help=(
+                    "Do not open the generated mart index in the OS default browser. "
+                    "Dry-run never opens a browser."
+                ),
+            )
     config_parser = subparsers.add_parser("config", help="Configuration operations.")
     config_subparsers = config_parser.add_subparsers(
         dest="config_command",
@@ -142,6 +152,11 @@ def _write_result_json(log_path: Path, payload: dict) -> Path:
 def _progress(message: str) -> None:
     LOG.info(message)
     print(f"[INFO] {message}", file=sys.stderr)
+
+
+def _open_report(path: Path) -> bool:
+    """Open an HTML report in the operating system's default browser."""
+    return webbrowser.open(path.resolve().as_uri(), new=2)
 
 
 def _print_plans(plans: object) -> None:
@@ -292,6 +307,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[INFO] Log: {log_path}")
             else:
                 print("[INFO] Dry-run only. No persistent files were changed.")
+            if apply:
+                report_path = Path(payload["mart_path"]) / "index.html"
+                if args.no_open:
+                    print(f"[INFO] Report: {report_path}")
+                    print("[INFO] Browser opening suppressed by --no-open.")
+                else:
+                    try:
+                        opened = _open_report(report_path)
+                    except (OSError, webbrowser.Error) as exc:
+                        opened = False
+                        LOG.warning("Could not open report in browser: %s", exc)
+                    if opened:
+                        LOG.info("Opened report in default browser: %s", report_path)
+                        print(f"[INFO] Opened report: {report_path}")
+                    else:
+                        print(
+                            "[WARNING] Could not open the report in the default "
+                            f"browser: {report_path}",
+                            file=sys.stderr,
+                        )
             return 0
 
         apply = not args.dry_run
