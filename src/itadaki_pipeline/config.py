@@ -14,6 +14,7 @@ import yaml
 from .paths import CONFIG_FILENAME, AppPaths, runtime_temp_base, user_paths
 
 DEFAULT_CONFIG_RESOURCE = "resources/config.example.yaml"
+ITADAKI_REC_DIRECTORY = "Rec"
 
 
 @dataclass(frozen=True)
@@ -22,9 +23,14 @@ class ProfileConfig:
     device_id: str
     timezone_name: str
     timezone: dt.tzinfo
-    rec_dir: Path
+    itadaki_root: Path
     archive_root: Path
     delete_after_success: bool
+
+    @property
+    def rec_dir(self) -> Path:
+        """Return Itadaki's application-owned recording directory."""
+        return self.itadaki_root / ITADAKI_REC_DIRECTORY
 
 
 @dataclass(frozen=True)
@@ -236,6 +242,13 @@ def _build_config(
         if not destination_path:
             raise ValueError(f"{name}: destination_path is required")
 
+        itadaki_root = _path(str(source_path), cwd)
+        if itadaki_root.name.casefold() == ITADAKI_REC_DIRECTORY.casefold():
+            raise ValueError(
+                f"{name}: source_path must be the Itadaki folder, not its Rec "
+                f"subfolder: {itadaki_root.parent}"
+            )
+
         timezone_name = str(item.get("timezone", "Asia/Tokyo"))
         profiles.append(
             ProfileConfig(
@@ -243,7 +256,7 @@ def _build_config(
                 device_id=str(device_id),
                 timezone_name=timezone_name,
                 timezone=_timezone(timezone_name),
-                rec_dir=_path(str(source_path), cwd),
+                itadaki_root=itadaki_root,
                 archive_root=_path(str(destination_path), cwd),
                 delete_after_success=bool(item.get("delete_after_success", False)),
             )
@@ -355,7 +368,7 @@ def public_config(
                 "name": profile.name,
                 "device_id": profile.device_id,
                 "timezone": profile.timezone_name,
-                "source_path": str(profile.rec_dir),
+                "source_path": str(profile.itadaki_root),
                 "destination_path": str(profile.archive_root),
                 "delete_after_success": profile.delete_after_success,
             }

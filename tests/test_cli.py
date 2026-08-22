@@ -15,7 +15,7 @@ def _resolved_config(tmp_path: Path, *, weekly: bool = False) -> ResolvedConfig:
         device_id="Example PC",
         timezone_name="Asia/Tokyo",
         timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
-        rec_dir=tmp_path / "source",
+        itadaki_root=tmp_path / "source",
         archive_root=tmp_path / "archive",
         delete_after_success=False,
     )

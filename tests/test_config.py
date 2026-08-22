@@ -94,7 +94,8 @@ def test_config_precedence_profile_selection_and_cwd_relative_paths(
 
     assert resolved.config.processed_data_root == tmp_path / "cwd-processed-data"
     assert resolved.config.weekly_mart_root == tmp_path / "global-weekly-mart"
-    assert resolved.config.profile.rec_dir == tmp_path / "source"
+    assert resolved.config.profile.itadaki_root == tmp_path / "source"
+    assert resolved.config.profile.rec_dir == tmp_path / "source" / "Rec"
     assert resolved.config.profile.archive_root == tmp_path / "destination"
     assert resolved.config.selected_profile_name == "explicit"
     assert resolved.config_sources == (
@@ -271,6 +272,31 @@ def test_processed_data_path_is_required(tmp_path: Path, monkeypatch) -> None:
     )
 
     with pytest.raises(ValueError, match="processed_data_path is required"):
+        resolve_config(cwd=tmp_path, explicit_config=explicit)
+
+
+def test_source_path_rejects_rec_subfolder(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.global_config_path",
+        lambda: tmp_path / "missing-global.yaml",
+    )
+    explicit = tmp_path / "explicit.yaml"
+    explicit.write_text(
+        "\n".join(
+            [
+                "default_profile: current",
+                "processed_data_path: processed-data",
+                "profiles:",
+                "  - name: current",
+                "    device_id: Current PC",
+                "    source_path: C:/path/to/Itadaki/Rec",
+                "    destination_path: destination",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Itadaki folder, not its Rec subfolder"):
         resolve_config(cwd=tmp_path, explicit_config=explicit)
 
 

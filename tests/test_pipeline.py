@@ -58,7 +58,8 @@ class PipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.rec_dir = self.root / "source" / "Rec"
+        self.itadaki_root = self.root / "source"
+        self.rec_dir = self.itadaki_root / "Rec"
         shutil.copytree(FIXTURE_REC, self.rec_dir)
         self.archive = self.root / "archive"
         self.processed_data = self.root / "processed-data"
@@ -67,7 +68,7 @@ class PipelineTests(unittest.TestCase):
             device_id="Example PC",
             timezone_name="Asia/Tokyo",
             timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
-            rec_dir=self.rec_dir,
+            itadaki_root=self.itadaki_root,
             archive_root=self.archive,
             delete_after_success=True,
         )
@@ -167,6 +168,18 @@ class PipelineTests(unittest.TestCase):
     def test_current_day_is_excluded(self) -> None:
         plan = discover_source(self.source, dt.date(2026, 4, 3))
         self.assertEqual((), plan.dates)
+
+    def test_archive_uses_raw_directory(self) -> None:
+        self.assertEqual(
+            self.archive / "Raw" / "2026" / "04" / "Key" / "20260404.rec",
+            archive_path(self.source, dt.date(2026, 4, 4), "Key"),
+        )
+
+    def test_legacy_rec_archive_requires_explicit_rename(self) -> None:
+        (self.archive / "Rec").mkdir(parents=True)
+
+        with self.assertRaisesRegex(ValueError, "Rename.*Rec.*Raw"):
+            discover_source(self.source, dt.date(2026, 4, 4))
 
     def test_selected_profile_is_the_only_ingest_scope(self) -> None:
         historical = replace(

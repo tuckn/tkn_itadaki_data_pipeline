@@ -9,7 +9,7 @@ WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと�
 
 ## 必要なもの
 
-- Windowsで記録されたItadakiの`Rec`フォルダ
+- Windowsで記録されたItadakiフォルダ内の`Rec`データ
 - Python 3.11以上
 - [uv](https://docs.astral.sh/uv/)
 
@@ -83,7 +83,7 @@ profiles:
   - name: current-pc
     device_id: Example Current PC
     timezone: Asia/Tokyo
-    source_path: C:/path/to/active/Itadaki/Rec
+    source_path: C:/path/to/active/Itadaki
     destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
     delete_after_success: true
 ```
@@ -91,8 +91,9 @@ profiles:
 - `default_profile`: `--profile`を省略したときに使用するprofile名
 - `profiles`: PCごとの入力、archive、timezone、削除設定
 - `name`: `--profile`で指定する一意なprofile名
-- `source_path`: Itadakiの`Rec`フォルダ
-- `destination_path`: 検証済み`.rec`を保存する端末別Raw archive
+- `source_path`: Itadakiフォルダ。配下の`Rec`はpipelineが自動的に参照
+- `destination_path`: 検証済み`.rec`を保存する端末別Raw archiveの親フォルダ。
+  pipelineが配下に`Raw`を作成
 - `processed_data_path`: `InputEvents`と`DailyUsage`の出力ルート
 - `device_id`: 記録元のPCを識別する名前
 - `timezone`: 当日分を除外するために使う記録元PCのtimezone。現在は`Asia/Tokyo`
@@ -100,7 +101,7 @@ profiles:
 - `weekly_mart_path`: `build-weekly`が週次martを出力するルート。ほかのコマンド
   では省略可能
 - `delete_after_success`: archive、CSV、manifestの確定後に、完了日分を
-  `source_path`から削除するか
+  `source_path/Rec`から削除するか
 - `log_path`: 省略時は`~/.tkn/itadaki_data_pipeline/state/logs`
 
 別PCの履歴を現在のPCへ誤帰属させないため、`device_id`はprofileごとに明示します。
@@ -226,7 +227,16 @@ platform標準の一時領域だけを使用し、終了時に残しません。
 ## 出力
 
 検証済みの元データは、設定した`destination_path`の下へ端末別Raw archiveとして
-保存されます。
+保存されます。Itadaki自身が使う`Rec`と区別するため、整理済みarchiveのフォルダ名は
+`Raw`です。
+
+```text
+<destination-path>/Raw/yyyy/MM/<series>/yyyyMMdd.rec
+```
+
+0.7.0より前のpipelineで作成した`<destination-path>/Rec`がある場合は、実行前に
+そのフォルダを`Raw`へ一度だけ名前変更してください。`Rec`と`Raw`の両方が存在する
+状態での自動統合は行いません。
 
 分析用CSVは次の場所へ出力されます。
 

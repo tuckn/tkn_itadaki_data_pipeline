@@ -6,13 +6,13 @@ profiles:
   - name: historical-pc
     device_id: Example Historical PC
     timezone: Asia/Tokyo
-    source_path: C:/path/to/historical/Rec
+    source_path: C:/path/to/historical/Itadaki
     destination_path: C:/path/to/archive/Example Historical PC/var/log/Itadaki
     delete_after_success: false
 
   - name: current-pc
     device_id: Example Current PC
     timezone: Asia/Tokyo
-    source_path: C:/path/to/active/Itadaki/Rec
+    source_path: C:/path/to/active/Itadaki
     destination_path: C:/path/to/archive/Example Current PC/var/log/Itadaki
     delete_after_success: true

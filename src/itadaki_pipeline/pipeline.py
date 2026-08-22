@@ -59,6 +59,7 @@ DAILY_USAGE_HEADER = [
 ]
 
 INGEST_MANIFEST_SCHEMA_VERSION = 2
+RAW_ARCHIVE_DIRECTORY = "Raw"
 
 
 @dataclass(frozen=True)
@@ -104,7 +105,7 @@ def sha256_file(path: Path) -> str:
 
 def archive_relative(date: dt.date, series: str) -> Path:
     return (
-        Path("Rec")
+        Path(RAW_ARCHIVE_DIRECTORY)
         / f"{date.year:04d}"
         / f"{date.month:02d}"
         / series
@@ -114,6 +115,15 @@ def archive_relative(date: dt.date, series: str) -> Path:
 
 def archive_path(source: ProfileConfig, date: dt.date, series: str) -> Path:
     return source.archive_root / archive_relative(date, series)
+
+
+def _ensure_current_archive_layout(source: ProfileConfig) -> None:
+    legacy_root = source.archive_root / "Rec"
+    if legacy_root.exists():
+        raise ValueError(
+            "Legacy archive directory found. Rename it before running the pipeline: "
+            f"{legacy_root} -> {source.archive_root / RAW_ARCHIVE_DIRECTORY}"
+        )
 
 
 def _discover_series(rec_dir: Path, series: str) -> dict[dt.date, Path]:
@@ -130,6 +140,7 @@ def _discover_series(rec_dir: Path, series: str) -> dict[dt.date, Path]:
 
 
 def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
+    _ensure_current_archive_layout(source)
     if not source.rec_dir.is_dir():
         raise FileNotFoundError(f"Rec directory not found: {source.rec_dir}")
     by_series = {series: _discover_series(source.rec_dir, series) for series in SERIES}
@@ -246,7 +257,12 @@ def _month_archive_files(
     year: int,
     month: int,
 ) -> dict[dt.date, dict[str, Path]]:
-    month_root = source.archive_root / "Rec" / f"{year:04d}" / f"{month:02d}"
+    month_root = (
+        source.archive_root
+        / RAW_ARCHIVE_DIRECTORY
+        / f"{year:04d}"
+        / f"{month:02d}"
+    )
     by_series: dict[str, dict[dt.date, Path]] = {}
     for series in SERIES:
         directory = month_root / series
@@ -716,10 +732,11 @@ def run_pipeline(
 
 
 def archive_months(source: ProfileConfig) -> Iterator[tuple[int, int]]:
-    rec_root = source.archive_root / "Rec"
-    if not rec_root.is_dir():
+    _ensure_current_archive_layout(source)
+    raw_root = source.archive_root / RAW_ARCHIVE_DIRECTORY
+    if not raw_root.is_dir():
         return
-    for year_dir in sorted(rec_root.iterdir()):
+    for year_dir in sorted(raw_root.iterdir()):
         if not year_dir.is_dir() or not year_dir.name.isdigit():
             continue
         for month_dir in sorted(year_dir.iterdir()):

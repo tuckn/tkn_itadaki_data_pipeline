@@ -157,7 +157,7 @@ def _config(tmp_path: Path) -> PipelineConfig:
         device_id="PC-B",
         timezone_name="Asia/Tokyo",
         timezone=dt.timezone(dt.timedelta(hours=9), name="Asia/Tokyo"),
-        rec_dir=tmp_path / "Rec",
+        itadaki_root=tmp_path / "Itadaki",
         archive_root=archive,
         delete_after_success=False,
     )

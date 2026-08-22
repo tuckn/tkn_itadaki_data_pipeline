@@ -166,7 +166,7 @@ def _print_plans(plans: object) -> None:
             {
                 "profile": plan.source.name,
                 "device_id": plan.source.device_id,
-                "source_path": str(plan.source.rec_dir),
+                "source_path": str(plan.source.itadaki_root),
                 "destination_path": str(plan.source.archive_root),
                 "delete_after_success": plan.source.delete_after_success,
                 "cutoff_date": plan.cutoff_date.isoformat(),
