@@ -13,6 +13,7 @@ import webbrowser
 from pathlib import Path
 
 from .config import initialize_user_config, public_config, resolve_config
+from .config_display import config_lines
 from .pipeline import run_pipeline, verify_config
 from .weekly import build_weekly
 
@@ -29,14 +30,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Explicit YAML config. Precedence: global, CWD, explicit. "
-            "May also be placed after a pipeline command."
+            "May also be placed after ingest, verify, build-weekly, or config list."
         ),
     )
     parser.add_argument(
         "--profile",
         help=(
             "Profile name from config. Uses default_profile when omitted. "
-            "May also be placed after a pipeline command."
+            "May also be placed after ingest, verify, build-weekly, or config list."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -100,11 +101,26 @@ def _parser() -> argparse.ArgumentParser:
             "left unchanged; an edited file is never overwritten."
         ),
     )
-    config_show_parser = config_subparsers.add_parser(
-        "show",
-        help="Show resolved configuration and files used.",
+    config_list_parser = config_subparsers.add_parser(
+        "list",
+        help="List resolved configuration and winning sources.",
+        description=(
+            "Read and resolve configuration without creating or updating config, "
+            "state, cache, logs, or reports. Prints one key=value per line by default."
+        ),
     )
-    config_show_parser.add_argument(
+    config_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full resolved configuration as JSON instead of key=value lines.",
+    )
+    config_list_parser.add_argument(
+        "--config",
+        type=Path,
+        dest="command_config",
+        help="Explicit YAML configuration path.",
+    )
+    config_list_parser.add_argument(
         "--profile",
         dest="command_profile",
         help="Profile name from config. Uses default_profile when omitted.",
@@ -234,16 +250,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         config = resolved.config
         if args.command == "config":
-            print(
-                json.dumps(
-                    {
-                        "config_sources": list(resolved.config_sources),
-                        "values": public_config(config, resolved.paths),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+            payload = {
+                "config_sources": list(resolved.config_sources),
+                "values": public_config(config, resolved.paths),
+                "winning_sources": resolved.winning_sources,
+            }
+            _progress("Showing resolved configuration")
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print("\n".join(config_lines(payload)))
             return 0
 
         if args.command == "verify":

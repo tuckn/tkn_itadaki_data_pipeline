@@ -1,4 +1,4 @@
-# Itadaki Data Pipeline
+# Tkn Itadaki Data Pipeline
 
 WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと』](https://www.vector.co.jp/soft/win95/util/se263388.html) （以後、Itadaki）が記録したキーボードとマウスの操作ログである日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
 変換し、Itadaki単独の観測値をISO週で集計・可視化するCLIです。
@@ -117,16 +117,44 @@ entryを`profiles`へ移し、`timezone`をprofile内へ移動して、`default_
 設定を確認します。
 
 ```console
-tkn-itadaki-pipeline config show
+tkn-itadaki-pipeline config list
 ```
 
-実際に読み込まれた設定ファイルと、解決後の設定値がJSONで表示されます。
-ファイルの移動やCSVの作成は行いません。
+`git config --list`のように、1行に1つの`key=value`を表示します。
+`config_sources`は読み込んだ設定ファイル、`values`は解決後の設定値と保存先、
+`winning_sources`は各設定値の決定元です。決定元は設定ファイルの絶対パス、
+`built-in`（省略時の既定値）、`CLI`（`--profile`指定）で表示します。
+
+nested mappingは`.`、配列要素は`[0]`などのindexで表し、空の配列・mappingは
+`[]`・`{}`、booleanは`true`/`false`、未設定値は`null`と表示します。
+文字列を引用符で囲まず、Windows pathのbackslashを二重にescapeしないため、
+パスをそのままコピーできます。改行などの制御文字はescapeします。
+
+```text
+values.selected_profile=current-pc
+values.profiles[0].timezone=Asia/Tokyo
+values.profiles[0].delete_after_success=true
+```
+
+設定file、state、cache、log、reportは作成・更新しません。入力や出力のパスが
+まだ存在しなくても設定を確認できます。表示を知らせる`[INFO]`は標準エラーへ、
+設定一覧は標準出力へ出します。
+
+JSONを使う自動処理では、`--json`を指定します。
+
+```console
+tkn-itadaki-pipeline config list --json
+```
+
+0.8.0では旧`config show`を廃止しました。従来のJSONを読み取る処理は
+`config list --json`へ変更してください。`config_sources`と`values`は維持し、
+`winning_sources`を追加しています。設定ファイルの移行は不要です。
+変更履歴は[CHANGELOG.md](CHANGELOG.md)に記載しています。
 
 別のprofileを確認する場合は、`--profile`で`profiles.name`を指定します。
 
 ```console
-tkn-itadaki-pipeline config show --profile historical-pc
+tkn-itadaki-pipeline config list --profile historical-pc
 ```
 
 ## 基本的な使用方法
@@ -210,7 +238,7 @@ tkn-itadaki-pipeline verify --details
 
 `ingest`と`build-weekly`は、オプションなしで名前どおりの変更を行います。
 `--dry-run`を指定した場合だけ模擬実行になります。read-onlyの`verify`と
-`config show`には`--dry-run`はありません。
+`config list`には`--dry-run`はありません。
 
 ### dry-runの境界
 

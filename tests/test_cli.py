@@ -117,12 +117,28 @@ def test_replaced_ingest_commands_are_removed(command: str) -> None:
         _parser().parse_args([command])
 
 
-def test_config_show_command() -> None:
-    args = _parser().parse_args(["config", "show", "--profile", "current"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--config", "config.yaml", "--profile", "current", "config", "list"],
+        ["config", "list", "--config", "config.yaml", "--profile", "current"],
+    ],
+)
+def test_config_list_command_and_option_placement(arguments) -> None:
+    args = _parser().parse_args(arguments)
 
     assert args.command == "config"
-    assert args.config_command == "show"
-    assert args.command_profile == "current"
+    assert args.config_command == "list"
+    assert (getattr(args, "command_profile", None) or args.profile) == "current"
+    assert (args.command_config or args.config) == Path("config.yaml")
+    assert args.json is False
+    assert _parser().parse_args(["config", "list", "--json"]).json is True
+
+
+def test_config_show_is_removed() -> None:
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args(["config", "show"])
+    assert exc.value.code == 2
 
 
 def test_config_init_emits_status_and_absolute_path(
@@ -169,10 +185,14 @@ def test_config_init_rejects_explicit_config(capsys) -> None:
     assert "--config cannot be combined with config init" in capsys.readouterr().err
 
 
-def test_config_show_emits_processed_data_path(
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("profile_name", [None, "current"])
+def test_config_list_output_provenance_and_readonly(
     tmp_path: Path,
     monkeypatch,
     capsys,
+    as_json: bool,
+    profile_name: str | None,
 ) -> None:
     monkeypatch.setattr(
         "itadaki_pipeline.config.global_config_path",
@@ -196,12 +216,50 @@ def test_config_show_emits_processed_data_path(
         encoding="utf-8",
     )
 
-    assert main(["--config", str(config), "config", "show"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["values"]["processed_data_path"] == str(
-        tmp_path / "processed-data"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
+    monkeypatch.setattr(
+        "itadaki_pipeline.config.runtime_temp_base", lambda: tmp_path / "runtime-temp"
     )
-    assert "bronze_path" not in payload["values"]
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): (path.read_bytes(), path.stat().st_mtime_ns)
+            if path.is_file() else None
+            for path in tmp_path.rglob("*")
+        }
+
+    before = snapshot()
+    arguments = ["config", "list", "--config", str(config)]
+    if as_json:
+        arguments.append("--json")
+    if profile_name:
+        arguments.extend(["--profile", profile_name])
+    assert main(arguments) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "[INFO] Showing resolved configuration\n"
+    assert snapshot() == before
+    assert "bronze_path" not in captured.out
+    if as_json:
+        payload = json.loads(captured.out)
+        assert payload["config_sources"] == [str(config)]
+        assert payload["values"]["processed_data_path"] == str(tmp_path / "processed-data")
+        assert payload["values"]["weekly_mart_path"] is None
+        assert payload["values"]["profiles"][0]["delete_after_success"] is False
+        assert payload["winning_sources"]["processed_data_path"] == str(config)
+        assert payload["winning_sources"]["selected_profile"] == (
+            "CLI" if profile_name else str(config)
+        )
+    else:
+        lines = captured.out.splitlines()
+        assert f"config_sources[0]={config}" in lines
+        assert f"values.processed_data_path={tmp_path / 'processed-data'}" in lines
+        assert "values.weekly_mart_path=null" in lines
+        assert "values.profiles[0].delete_after_success=false" in lines
+        assert "values.selected_profile=current" in lines
+        assert f"winning_sources.processed_data_path={config}" in lines
+        selected_source = "CLI" if profile_name else str(config)
+        assert f"winning_sources.selected_profile={selected_source}" in lines
+        assert "winning_sources.log_path=built-in" in lines
 
 
 def test_ingest_dry_run_forwards_selected_profile_without_creating_logs(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -65,6 +65,7 @@ class ResolvedConfig:
     config: PipelineConfig
     config_sources: tuple[str, ...]
     paths: AppPaths
+    winning_sources: dict[str, str] = field(default_factory=dict)
 
 
 def global_config_path() -> Path:
@@ -310,6 +311,7 @@ def resolve_config(
         candidates.append(explicit_config.expanduser().resolve())
 
     values: dict[str, Any] = {}
+    origins: dict[str, str] = {}
     config_sources: list[str] = []
     last_path: Path | None = None
     for path in candidates:
@@ -322,6 +324,7 @@ def resolve_config(
                 values.pop("profiles", None)
                 values.pop("default_profile", None)
             values.update(layer)
+            origins.update(dict.fromkeys(layer, str(path)))
             config_sources.append(str(path))
             last_path = path
 
@@ -329,16 +332,36 @@ def resolve_config(
         searched = ", ".join(str(path) for path in candidates)
         raise FileNotFoundError(f"No configuration file found. Searched: {searched}")
 
+    config = _build_config(
+        values,
+        cwd=current,
+        config_path=last_path,
+        paths=paths,
+        profile_name=profile_name,
+    )
+    winning_sources = {
+        key: origins.get(key, "built-in")
+        for key in (
+            "default_profile", "processed_data_path", "weekly_mart_path", "log_path"
+        )
+    }
+    winning_sources["selected_profile"] = (
+        "CLI" if profile_name else winning_sources["default_profile"]
+    )
+    # Each higher-priority profiles list replaces the entire lower-priority list.
+    for index, item in enumerate(values["profiles"]):
+        for key in (
+            "name", "device_id", "timezone", "source_path", "destination_path",
+            "delete_after_success",
+        ):
+            winning_sources[f"profiles[{index}].{key}"] = (
+                origins["profiles"] if key in item else "built-in"
+            )
     return ResolvedConfig(
-        config=_build_config(
-            values,
-            cwd=current,
-            config_path=last_path,
-            paths=paths,
-            profile_name=profile_name,
-        ),
+        config=config,
         config_sources=tuple(config_sources),
         paths=paths,
+        winning_sources=winning_sources,
     )
 
 

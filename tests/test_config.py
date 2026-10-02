@@ -104,6 +104,16 @@ def test_config_precedence_profile_selection_and_cwd_relative_paths(
         str(explicit),
     )
     assert resolved.paths == user_paths()
+    assert resolved.winning_sources["processed_data_path"] == str(cwd_config)
+    assert resolved.winning_sources["weekly_mart_path"] == str(global_config)
+    assert resolved.winning_sources["default_profile"] == str(explicit)
+    assert resolved.winning_sources["selected_profile"] == str(explicit)
+    assert resolved.winning_sources["profiles[0].source_path"] == str(explicit)
+    assert resolved.winning_sources["profiles[0].delete_after_success"] == "built-in"
+    assert resolved.winning_sources["log_path"] == "built-in"
+    selected = resolve_config(cwd=tmp_path, explicit_config=explicit, profile_name="explicit")
+    assert selected.winning_sources["selected_profile"] == "CLI"
+    assert selected.winning_sources["default_profile"] == str(explicit)
 
 
 def test_explicit_profiles_replace_legacy_sources_from_lower_layer(
@@ -324,3 +334,34 @@ def test_bronze_path_is_rejected(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="unknown keys.*bronze_path"):
         resolve_config(cwd=tmp_path, explicit_config=explicit)
+
+
+def test_profile_replacement_resets_omitted_defaults_and_origins(tmp_path: Path, monkeypatch):
+    global_config, _ = initialize_user_config(target=tmp_path / "global.yaml")
+    monkeypatch.setattr("itadaki_pipeline.config.global_config_path", lambda: global_config)
+    override = tmp_path / ".tkn" / "config.yaml"
+    override.parent.mkdir()
+    override.write_text(
+        "default_profile: replacement\n"
+        "weekly_mart_path: null\n"
+        "log_path: custom-logs\n"
+        "profiles:\n"
+        "  - name: replacement\n"
+        "    device_id: Replacement PC\n"
+        "    source_path: source\n"
+        "    destination_path: destination\n",
+        encoding="utf-8",
+    )
+
+    resolved = resolve_config(cwd=tmp_path)
+    assert len(resolved.config.profiles) == 1
+    assert resolved.config.profile.timezone_name == "Asia/Tokyo"
+    assert resolved.config.profile.delete_after_success is False
+    assert resolved.config.weekly_mart_root is None
+    assert resolved.config.log_dir == tmp_path / "custom-logs"
+    assert resolved.winning_sources["profiles[0].name"] == str(override)
+    assert resolved.winning_sources["profiles[0].timezone"] == "built-in"
+    assert resolved.winning_sources["profiles[0].delete_after_success"] == "built-in"
+    assert resolved.winning_sources["weekly_mart_path"] == str(override)
+    assert resolved.winning_sources["log_path"] == str(override)
+    assert not any(key.startswith("profiles[1]") for key in resolved.winning_sources)
