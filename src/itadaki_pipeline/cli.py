@@ -11,20 +11,93 @@ import sys
 import uuid
 import webbrowser
 from pathlib import Path
+from typing import Any
 
-from .config import initialize_user_config, public_config, resolve_config
-from .config_display import config_lines
+from . import __version__
+from .config import (
+    cwd_config_path,
+    global_config_path,
+    initialize_user_config,
+    public_config,
+    resolve_config,
+)
+from .output import (
+    emit,
+    failure_result,
+    ingest_result,
+    source_result,
+    verification_result,
+    weekly_result,
+)
 from .pipeline import run_pipeline, verify_config
 from .weekly import build_weekly
 
 LOG = logging.getLogger("itadaki_pipeline")
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="tkn-itadaki-pipeline",
-        description="Archive Itadaki Rec logs and build idempotent processed CSVs.",
+class ArgumentFailure(SystemExit):
+    def __init__(self, message: str) -> None:
+        super().__init__(2)
+        self.message = message
+
+
+class Parser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+    def error(self, message: str) -> None:
+        raise ArgumentFailure(message)
+
+
+def _common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one JSON result instead of the default key=value list (also on errors).",
     )
+    parser.add_argument(
+        "--full-output",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Include every result detail in either text or JSON; does not change processing.",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Only errors on stderr; always print the final result.",
+    )
+    group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Include debug diagnostics on stderr; keep the same final result.",
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = Parser(
+        allow_abbrev=False,
+        prog="tkn-itadaki-pipeline",
+        description=(
+            "Archive Itadaki Rec logs and build idempotent processed CSVs. "
+            "Results on stdout default to a copyable key=value list; --json selects JSON. "
+            "Progress, warnings, and diagnostics go to stderr."
+        ),
+        epilog=(
+            "Exit codes: 0 success, 1 configuration/validation/runtime or partial failure, "
+            "2 invalid arguments, 130 interrupted. "
+            "Output options may appear before or after commands, including config subcommands."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    _common(parser)
+    parser.set_defaults(json=False, full_output=False, quiet=False, verbose=False)
     parser.add_argument(
         "--config",
         type=Path,
@@ -51,7 +124,9 @@ def _parser() -> argparse.ArgumentParser:
             command,
             help=command_help[command],
             description=command_help[command],
+            allow_abbrev=False,
         )
+        _common(subparser)
         subparser.add_argument(
             "--config",
             type=Path,
@@ -67,7 +142,7 @@ def _parser() -> argparse.ArgumentParser:
             subparser.add_argument(
                 "--details",
                 action="store_true",
-                help="Include one result item per verified device-month.",
+                help="Include one result per verified device-month (same as --full-output).",
             )
         if command in ("ingest", "build-weekly"):
             subparser.add_argument(
@@ -89,11 +164,12 @@ def _parser() -> argparse.ArgumentParser:
                 ),
             )
     config_parser = subparsers.add_parser("config", help="Configuration operations.")
+    _common(config_parser)
     config_subparsers = config_parser.add_subparsers(
         dest="config_command",
         required=True,
     )
-    config_subparsers.add_parser(
+    init_parser = config_subparsers.add_parser(
         "init",
         help="Create the user-global config from the packaged template.",
         description=(
@@ -101,6 +177,7 @@ def _parser() -> argparse.ArgumentParser:
             "left unchanged; an edited file is never overwritten."
         ),
     )
+    _common(init_parser)
     config_list_parser = config_subparsers.add_parser(
         "list",
         help="List resolved configuration and winning sources.",
@@ -109,11 +186,7 @@ def _parser() -> argparse.ArgumentParser:
             "state, cache, logs, or reports. Prints one key=value per line by default."
         ),
     )
-    config_list_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the full resolved configuration as JSON instead of key=value lines.",
-    )
+    _common(config_list_parser)
     config_list_parser.add_argument(
         "--config",
         type=Path,
@@ -138,7 +211,7 @@ def _configure_file_log(log_dir: Path, command: str) -> Path:
             LOG.removeHandler(existing)
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    LOG.setLevel(logging.INFO)
+    handler.setLevel(logging.INFO)
     LOG.addHandler(handler)
     return path
 
@@ -167,7 +240,6 @@ def _write_result_json(log_path: Path, payload: dict) -> Path:
 
 def _progress(message: str) -> None:
     LOG.info(message)
-    print(f"[INFO] {message}", file=sys.stderr)
 
 
 def _open_report(path: Path) -> bool:
@@ -175,202 +247,201 @@ def _open_report(path: Path) -> bool:
     return webbrowser.open(path.resolve().as_uri(), new=2)
 
 
-def _print_plans(plans: object) -> None:
-    payload = []
-    for plan in plans:
-        payload.append(
-            {
-                "profile": plan.source.name,
-                "device_id": plan.source.device_id,
-                "source_path": str(plan.source.itadaki_root),
-                "destination_path": str(plan.source.archive_root),
-                "delete_after_success": plan.source.delete_after_success,
-                "cutoff_date": plan.cutoff_date.isoformat(),
-                "date_count": len(plan.dates),
-                "date_range": (
-                    [plan.dates[0].isoformat(), plan.dates[-1].isoformat()]
-                    if plan.dates
-                    else None
-                ),
-                "source_files_present": len(plan.source_files),
-                "source_bytes": plan.total_bytes,
-                "expected_events_from_present_key_files": plan.expected_events,
-                "validation_warnings": list(plan.validation_warnings),
-            }
-        )
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+class ConsoleFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        return message.replace("\x1b", "\\u001b")
 
 
-def _print_results(results: object) -> None:
-    payload = [
-        {
-            "profile": result.profile_name,
-            "device_id": result.device_id,
-            "dates": result.dates,
-            "copied_files": result.copied_files,
-            "output_updates": result.output_updates,
-            "output_unchanged": result.output_unchanged,
-            "deleted_files": result.deleted_files,
-            "manifest": str(result.manifest_path) if result.manifest_path else None,
-            "warnings": list(result.warnings),
+def _configure_console(*, quiet: bool, verbose: bool) -> None:
+    for handler in list(LOG.handlers):
+        if not isinstance(handler, logging.FileHandler):
+            LOG.removeHandler(handler)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.ERROR if quiet else logging.DEBUG if verbose else logging.INFO)
+    handler.setFormatter(ConsoleFormatter("[%(levelname)s] %(message)s"))
+    LOG.setLevel(logging.DEBUG)
+    LOG.propagate = False
+    LOG.addHandler(handler)
+
+
+def _execute(args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    full = args.full_output
+    command = args.command
+    if command == "config" and args.config_command == "init":
+        context["stage"] = "config init"
+        context["targets"] = {"path": global_config_path()}
+        if args.config is not None:
+            raise ValueError("--config cannot be combined with config init")
+        if args.profile is not None:
+            raise ValueError("--profile cannot be combined with config init")
+        path, status = initialize_user_config()
+        LOG.info("Configuration %s", status)
+        return {"status": status, "command": "config init", "config_path": str(path)}
+
+    explicit_config = getattr(args, "command_config", None) or args.config
+    profile_name = getattr(args, "command_profile", None) or args.profile
+    context["stage"] = "configuration"
+    context["targets"] = {"config_paths": [global_config_path(), cwd_config_path(Path.cwd())]}
+    if explicit_config is not None:
+        context["targets"]["config_paths"].append(explicit_config.expanduser().absolute())
+    resolved = resolve_config(explicit_config=explicit_config, profile_name=profile_name)
+    config = resolved.config
+    if command == "config":
+        _progress("Showing resolved configuration")
+        return {
+            "status": "success",
+            "command": "config list",
+            "config_sources": list(resolved.config_sources),
+            "values": public_config(config, resolved.paths),
+            "winning_sources": resolved.winning_sources,
         }
-        for result in results
-    ]
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    context["stage"] = command
+    context["targets"] = {
+        "config_path": config.config_path,
+        "source_path": config.profile.itadaki_root,
+        "archive_path": config.profile.archive_root,
+        "processed_data_path": config.processed_data_root,
+    }
+    if command == "verify":
+        _progress("Verifying processed CSV files against the Raw archive")
+        items = verify_config(config)
+        return {
+            "status": "success",
+            "command": command,
+            **verification_result(items, config, full=full or args.details),
+        }
+
+    apply = not args.dry_run
+    context["dry_run"] = args.dry_run
+    if command == "build-weekly":
+        context["targets"]["mart_path"] = config.weekly_mart_root
+    if apply:
+        context["targets"]["path"] = config.log_dir
+        log_path = _configure_file_log(config.log_dir, command)
+        context["targets"].pop("path")
+        context["targets"]["log_path"] = log_path
+    else:
+        log_path = None
+    _progress(f"Starting {command} ({'write' if apply else 'dry-run'})")
+    LOG.debug("Selected profile: %s; config: %s", config.selected_profile_name, config.config_path)
+    if command == "ingest":
+        plans, results = run_pipeline(config, apply=apply)
+        result = {
+            "status": "success",
+            "command": command,
+            **ingest_result(plans, results, full=full, dry_run=args.dry_run),
+            "log_path": str(log_path) if log_path else None,
+        }
+        for item in result["attention"]:
+            LOG.warning("%s", item["reason"])
+        LOG.info(
+            "Completed ingest: %d dates, %d copied files",
+            result["counts"]["dates"],
+            result["counts"]["copied_files"],
+        )
+        return result
+
+    payload = build_weekly(config, apply=apply, progress=_progress)
+    context["targets"]["completed"] = {
+        "generated_weeks": list(payload["generated_weeks"]),
+        "generated_week_count": len(payload["generated_weeks"]),
+    }
+    result_path = None
+    if log_path is not None:
+        payload["log_path"] = str(log_path)
+        # Preserve the existing saved payload, independently of --json/--full-output.
+        context["stage"] = "save result"
+        context["targets"]["path"] = log_path.with_name(f"{log_path.stem}_result.json")
+        result_path = _write_result_json(log_path, payload)
+        context["targets"].pop("path")
+    result = {
+        "status": "success",
+        "command": command,
+        **weekly_result(payload, full=full),
+        "result_path": str(result_path) if result_path else None,
+        "log_path": str(log_path) if log_path else None,
+        "browser_status": "not-requested",
+        "attention": [],
+    }
+    if apply:
+        report_path = Path(payload["mart_path"]) / "index.html"
+        if args.no_open:
+            result["browser_status"] = "suppressed"
+        else:
+            opened = False
+            reason = "Could not open the report in the default browser"
+            try:
+                opened = _open_report(report_path)
+            except (OSError, webbrowser.Error) as error:
+                LOG.debug("Browser launch failed", exc_info=True)
+                reason = f"{reason}: {error}"
+            result["browser_status"] = "opened" if opened else "failed"
+            if not opened:
+                result["attention"].append({"path": str(report_path), "reason": reason})
+                LOG.warning("%s: %s", reason, report_path)
+    LOG.info(
+        "Completed build-weekly: %d generated, %d unchanged",
+        result["generated_week_count"],
+        result["unchanged_week_count"],
+    )
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    tokens = argv[: argv.index("--")] if "--" in argv else argv
+    json_output = "--json" in tokens
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     _close_file_logs()
+    _configure_console(
+        quiet="--quiet" in tokens or "-q" in tokens, verbose="--verbose" in tokens or "-v" in tokens
+    )
+    context = {"stage": "arguments", "targets": {}}
+    command = None
     try:
-        if args.command == "config" and args.config_command == "init":
-            if args.config is not None:
-                raise ValueError("--config cannot be combined with config init")
-            if args.profile is not None:
-                raise ValueError("--profile cannot be combined with config init")
-            path, status = initialize_user_config()
-            print(
-                json.dumps(
-                    {
-                        "status": status,
-                        "command": "config init",
-                        "config_path": str(path),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-
-        explicit_config = getattr(args, "command_config", None) or args.config
-        profile_name = getattr(args, "command_profile", None) or args.profile
-        resolved = resolve_config(
-            explicit_config=explicit_config,
-            profile_name=profile_name,
-        )
-        config = resolved.config
-        if args.command == "config":
-            payload = {
-                "config_sources": list(resolved.config_sources),
-                "values": public_config(config, resolved.paths),
-                "winning_sources": resolved.winning_sources,
-            }
-            _progress("Showing resolved configuration")
-            if args.json:
-                print(json.dumps(payload, ensure_ascii=False, indent=2))
-            else:
-                print("\n".join(config_lines(payload)))
-            return 0
-
-        if args.command == "verify":
-            results = verify_config(config)
-            totals = {
-                "months": len(results),
-                "input_events": sum(item["input_events"] for item in results),
-                "daily_usage": sum(item["daily_usage"] for item in results),
-            }
-            if args.details:
-                totals["details"] = results
-            print(json.dumps(totals, ensure_ascii=False, indent=2))
-            return 0
-
-        if args.command == "build-weekly":
-            apply = not args.dry_run
-            log_path = (
-                _configure_file_log(config.log_dir, args.command) if apply else None
-            )
-            _progress(
-                f"Starting build-weekly ({'write' if apply else 'dry-run'})"
-            )
-            payload = build_weekly(config, apply=apply, progress=_progress)
-            result_path = None
-            if log_path is not None:
-                payload["log_path"] = str(log_path)
-                result_path = _write_result_json(log_path, payload)
-                LOG.info("Result JSON: %s", result_path)
-            LOG.info("Completed build-weekly")
-            print(
-                f"[SUCCESS] build-weekly "
-                f"{'completed' if apply else 'dry-run completed'}."
-            )
-            print(f"[INFO] Mart: {payload['mart_path']}")
-            print(
-                f"[INFO] Weeks: {payload['candidate_week_count']} candidate, "
-                f"{len(payload['generated_weeks'])} generated, "
-                f"{payload['unchanged_week_count']} unchanged, "
-                f"{payload['stale_week_count']} stale."
-            )
-            if not apply:
-                print(
-                    f"[INFO] Planned actions: "
-                    f"{payload['missing_week_count']} create, "
-                    f"{payload['stale_week_count']} replace, "
-                    f"0 update, 0 delete, "
-                    f"{payload['unchanged_week_count']} skip."
-                )
-                for target in payload["weeks_to_generate"]:
-                    print(
-                        f"[INFO] Would {target['status']}: {target['week_id']} "
-                        f"({target['reason']})"
-                    )
-            print(
-                f"[INFO] Calendar reports: "
-                f"{payload['index']['month_report_count']} monthly, "
-                f"{payload['index']['year_report_count']} yearly."
-            )
-            if result_path is not None and log_path is not None:
-                print(f"[INFO] Result JSON: {result_path}")
-                print(f"[INFO] Log: {log_path}")
-            else:
-                print("[INFO] Dry-run only. No persistent files were changed.")
-            if apply:
-                report_path = Path(payload["mart_path"]) / "index.html"
-                if args.no_open:
-                    print(f"[INFO] Report: {report_path}")
-                    print("[INFO] Browser opening suppressed by --no-open.")
-                else:
-                    try:
-                        opened = _open_report(report_path)
-                    except (OSError, webbrowser.Error) as exc:
-                        opened = False
-                        LOG.warning("Could not open report in browser: %s", exc)
-                    if opened:
-                        LOG.info("Opened report in default browser: %s", report_path)
-                        print(f"[INFO] Opened report: {report_path}")
-                    else:
-                        print(
-                            "[WARNING] Could not open the report in the default "
-                            f"browser: {report_path}",
-                            file=sys.stderr,
-                        )
-            return 0
-
-        apply = not args.dry_run
-        log_path = None
-        if apply:
-            log_path = _configure_file_log(config.log_dir, args.command)
-            LOG.info(
-                "Starting ingest with profile %s from %s",
-                config.selected_profile_name,
-                config.config_path,
-            )
-
-        plans, results = run_pipeline(
-            config,
-            apply=apply,
-        )
-        _print_plans(plans)
-        if apply:
-            _print_results(results)
-            LOG.info("Completed %s", args.command)
-            print(f"Log: {log_path}")
-        else:
-            print("Dry-run only. No files were changed.")
+        args = _parser().parse_args(argv)
+        command = args.command
+        if command == "config":
+            command = f"config {args.config_command}"
+        if args.quiet and args.verbose:
+            raise ArgumentFailure("--quiet and --verbose cannot be combined")
+        _configure_console(quiet=args.quiet, verbose=args.verbose)
+        result = _execute(args, context)
+        emit(result, json_output=args.json)
         return 0
-    except Exception as exc:
-        LOG.exception("Pipeline failed")
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+    except ArgumentFailure as error:
+        LOG.error("%s", error.message)
+        result = failure_result(
+            ValueError(error.message), command=command, stage="arguments", targets={}
+        )
+        emit(result, json_output=json_output)
+        return 2
+    except (Exception, KeyboardInterrupt) as error:
+        interrupted = isinstance(error, KeyboardInterrupt)
+        result = failure_result(
+            error,
+            command=command,
+            stage=context["stage"],
+            targets=context["targets"],
+            interrupted=interrupted,
+        )
+        for item in result["errors"]:
+            LOG.error("%s", item["reason"])
+        LOG.debug("Failure type: %s", type(error).__name__)
+        if "dry_run" in context:
+            result["dry_run"] = context["dry_run"]
+        completed_results = getattr(error, "cli_context", {}).get("completed_results")
+        if completed_results is not None:
+            result["completed"]["results"] = [source_result(item) for item in completed_results]
+            result["targets"].pop("completed_results", None)
+        emit(result, json_output=json_output)
+        return 130 if interrupted else 1
+    finally:
+        _close_file_logs()
 
 
 if __name__ == "__main__":

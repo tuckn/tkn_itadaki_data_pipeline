@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import PipelineConfig, ProfileConfig
+from .diagnostics import annotate, diagnostic_context
 from .parser import (
     SERIES,
     ParseError,
@@ -120,21 +121,28 @@ def archive_path(source: ProfileConfig, date: dt.date, series: str) -> Path:
 def _ensure_current_archive_layout(source: ProfileConfig) -> None:
     legacy_root = source.archive_root / "Rec"
     if legacy_root.exists():
-        raise ValueError(
-            "Legacy archive directory found. Rename it before running the pipeline: "
-            f"{legacy_root} -> {source.archive_root / RAW_ARCHIVE_DIRECTORY}"
+        raise annotate(
+            ValueError(
+                "Legacy archive directory found. Rename it before running the pipeline: "
+                f"{legacy_root} -> {source.archive_root / RAW_ARCHIVE_DIRECTORY}"
+            ),
+            path=legacy_root,
         )
 
 
 def _discover_series(rec_dir: Path, series: str) -> dict[dt.date, Path]:
     directory = rec_dir / series
     if not directory.is_dir():
-        raise FileNotFoundError(f"Missing Itadaki series directory: {directory}")
+        raise annotate(
+            FileNotFoundError(f"Missing Itadaki series directory: {directory}"), path=directory
+        )
     result: dict[dt.date, Path] = {}
     for path in sorted(directory.glob("*.rec")):
         record_date = date_from_filename(path)
         if record_date in result:
-            raise ParseError(f"Duplicate {series} file for {record_date}: {path}")
+            raise annotate(
+                ParseError(f"Duplicate {series} file for {record_date}: {path}"), path=path
+            )
         result[record_date] = path
     return result
 
@@ -142,7 +150,9 @@ def _discover_series(rec_dir: Path, series: str) -> dict[dt.date, Path]:
 def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
     _ensure_current_archive_layout(source)
     if not source.rec_dir.is_dir():
-        raise FileNotFoundError(f"Rec directory not found: {source.rec_dir}")
+        raise annotate(
+            FileNotFoundError(f"Rec directory not found: {source.rec_dir}"), path=source.rec_dir
+        )
     by_series = {series: _discover_series(source.rec_dir, series) for series in SERIES}
     eligible_union = sorted(
         {
@@ -163,9 +173,13 @@ def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
             if path is None:
                 archived = archive_path(source, record_date, series)
                 if not archived.is_file():
-                    raise ParseError(
-                        f"{source.name}: {record_date} is missing {series} "
-                        "from both source and archive"
+                    raise annotate(
+                        ParseError(
+                            f"{source.name}: {record_date} is missing {series} "
+                            "from both source and archive"
+                        ),
+                        path=archived,
+                        source_path=source.rec_dir / series / f"{record_date:%Y%m%d}.rec",
                     )
                 validate_series_file(archived, series)
                 continue
@@ -174,9 +188,13 @@ def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
                 source_hash = sha256_file(path)
                 archived_hash = sha256_file(archived)
                 if source_hash != archived_hash:
-                    raise ParseError(
-                        f"Archive hash collision at {archived}: "
-                        f"{archived_hash} != {source_hash}"
+                    raise annotate(
+                        ParseError(
+                            f"Archive hash collision at {archived}: "
+                            f"{archived_hash} != {source_hash}"
+                        ),
+                        path=archived,
+                        source_path=source.rec_dir / series / f"{record_date:%Y%m%d}.rec",
                     )
             validate_series_file(path, series)
             source_files[(record_date, series)] = path
@@ -184,12 +202,8 @@ def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
             if series == "Key":
                 expected_events += path.stat().st_size // 12
 
-        key_path = by_series["Key"].get(record_date) or archive_path(
-            source, record_date, "Key"
-        )
-        moc_path = by_series["MoC"].get(record_date) or archive_path(
-            source, record_date, "MoC"
-        )
+        key_path = by_series["Key"].get(record_date) or archive_path(source, record_date, "Key")
+        moc_path = by_series["MoC"].get(record_date) or archive_path(source, record_date, "MoC")
         mouse_clicks = 0
         for event in iter_key_file(key_path):
             mouse_clicks += event.is_mouse
@@ -201,8 +215,7 @@ def discover_source(source: ProfileConfig, cutoff_date: dt.date) -> SourcePlan:
         moc_clicks = parse_moc_file(moc_path)
         if mouse_clicks != moc_clicks:
             validation_warnings.append(
-                f"{record_date}: Key mouse count {mouse_clicks} "
-                f"!= MoC count {moc_clicks}"
+                f"{record_date}: Key mouse count {mouse_clicks} != MoC count {moc_clicks}"
             )
 
     return SourcePlan(
@@ -231,9 +244,12 @@ def _atomic_copy_verified(source: Path, destination: Path, expected_hash: str) -
     if destination.exists():
         actual_hash = sha256_file(destination)
         if actual_hash != expected_hash:
-            raise ParseError(
-                f"Archive hash collision at {destination}: "
-                f"{actual_hash} != {expected_hash}"
+            raise annotate(
+                ParseError(
+                    f"Archive hash collision at {destination}: {actual_hash} != {expected_hash}"
+                ),
+                path=destination,
+                source_path=source,
             )
         return "existing"
 
@@ -242,9 +258,10 @@ def _atomic_copy_verified(source: Path, destination: Path, expected_hash: str) -
         shutil.copy2(source, temporary)
         copied_hash = sha256_file(temporary)
         if copied_hash != expected_hash:
-            raise OSError(
-                f"Hash changed while copying {source}: "
-                f"{copied_hash} != {expected_hash}"
+            raise annotate(
+                OSError(f"Hash changed while copying {source}: {copied_hash} != {expected_hash}"),
+                path=destination,
+                source_path=source,
             )
         os.replace(temporary, destination)
     finally:
@@ -257,12 +274,7 @@ def _month_archive_files(
     year: int,
     month: int,
 ) -> dict[dt.date, dict[str, Path]]:
-    month_root = (
-        source.archive_root
-        / RAW_ARCHIVE_DIRECTORY
-        / f"{year:04d}"
-        / f"{month:02d}"
-    )
+    month_root = source.archive_root / RAW_ARCHIVE_DIRECTORY / f"{year:04d}" / f"{month:02d}"
     by_series: dict[str, dict[dt.date, Path]] = {}
     for series in SERIES:
         directory = month_root / series
@@ -279,13 +291,14 @@ def _month_archive_files(
     for record_date in dates:
         missing = [series for series in SERIES if record_date not in by_series[series]]
         if missing:
-            raise ParseError(
-                f"{source.archive_root}: incomplete archive for {record_date}; "
-                f"missing {', '.join(missing)}"
+            raise annotate(
+                ParseError(
+                    f"{source.archive_root}: incomplete archive for {record_date}; "
+                    f"missing {', '.join(missing)}"
+                ),
+                path=month_root,
             )
-        result[record_date] = {
-            series: by_series[series][record_date] for series in SERIES
-        }
+        result[record_date] = {series: by_series[series][record_date] for series in SERIES}
     return result
 
 
@@ -358,20 +371,22 @@ def _validate_csv(
         reader = csv.reader(handle)
         actual_header = next(reader, None)
         if actual_header != header:
-            raise ParseError(f"{path}: unexpected header {actual_header}")
+            raise annotate(ParseError(f"{path}: unexpected header {actual_header}"), path=path)
         for row in reader:
             if row[0] != device_id:
-                raise ParseError(f"{path}: unexpected device_id {row[0]!r}")
+                raise annotate(ParseError(f"{path}: unexpected device_id {row[0]!r}"), path=path)
             if dataset == "InputEvents":
                 key: tuple[str, int] | str = (row[1], int(row[3]))
             else:
                 key = row[1]
             if previous is not None and key <= previous:
-                raise ParseError(f"{path}: rows are not strictly sorted at {key!r}")
+                raise annotate(
+                    ParseError(f"{path}: rows are not strictly sorted at {key!r}"), path=path
+                )
             previous = key
             count += 1
     if count != expected_rows:
-        raise ParseError(f"{path}: expected {expected_rows} rows, got {count}")
+        raise annotate(ParseError(f"{path}: expected {expected_rows} rows, got {count}"), path=path)
 
 
 def _commit_csv(temporary: Path, destination: Path, dataset: str, rows: int) -> OutputRecord:
@@ -533,10 +548,7 @@ def process_source(
 ) -> SourceRunResult:
     source = plan.source
     local_now = (now or dt.datetime.now(config.timezone)).astimezone(config.timezone)
-    batch_id = (
-        local_now.strftime("%Y%m%dT%H%M%S%z")
-        + f"_{mode}_{source.name.replace(' ', '-')}"
-    )
+    batch_id = local_now.strftime("%Y%m%dT%H%M%S%z") + f"_{mode}_{source.name.replace(' ', '-')}"
     manifest_path = (
         source.archive_root
         / "_manifests"
@@ -552,9 +564,7 @@ def process_source(
             "mode": mode,
             "profile_name": source.name,
             "started_at": local_now.isoformat(timespec="seconds"),
-            "completed_at": dt.datetime.now(config.timezone).isoformat(
-                timespec="seconds"
-            ),
+            "completed_at": dt.datetime.now(config.timezone).isoformat(timespec="seconds"),
             "timezone": config.timezone_name,
             "device_id": source.device_id,
             "cutoff_date": plan.cutoff_date.isoformat(),
@@ -591,29 +601,28 @@ def process_source(
             destination = archive_path(source, record_date, series)
             if source_path is not None:
                 source_hash = sha256_file(source_path)
-                action = _atomic_copy_verified(
-                    source_path, destination, source_hash
-                )
+                action = _atomic_copy_verified(source_path, destination, source_hash)
                 if action == "copied":
                     copied_files += 1
             else:
                 if not destination.is_file():
-                    raise ParseError(
-                        f"Recovery failed; archive file is missing: {destination}"
+                    raise annotate(
+                        ParseError(f"Recovery failed; archive file is missing: {destination}"),
+                        path=destination,
                     )
                 source_hash = sha256_file(destination)
                 action = "archive-only"
             validate_series_file(destination, series)
             if sha256_file(destination) != source_hash:
-                raise ParseError(f"Archive verification failed: {destination}")
+                raise annotate(
+                    ParseError(f"Archive verification failed: {destination}"), path=destination
+                )
             file_records.append(
                 {
                     "date": record_date.isoformat(),
                     "series": series,
                     "source_path": (
-                        f"{series}/{source_path.name}"
-                        if source_path is not None
-                        else None
+                        f"{series}/{source_path.name}" if source_path is not None else None
                     ),
                     "source_present": source_path is not None,
                     "archive_path": _relative(destination, source.archive_root),
@@ -627,9 +636,7 @@ def process_source(
     warnings: list[str] = list(plan.validation_warnings)
     months = sorted({(date.year, date.month) for date in plan.dates})
     for year, month in months:
-        month_outputs, month_warnings = build_month(
-            config, source, year, month
-        )
+        month_outputs, month_warnings = build_month(config, source, year, month)
         outputs.extend(month_outputs)
         warnings.extend(month_warnings)
     warnings = list(dict.fromkeys(warnings))
@@ -671,6 +678,7 @@ def process_source(
 
     deleted_files = 0
     cleanup_errors: list[str] = []
+    cleanup_items: list[dict] = []
     if source.delete_after_success:
         hashes = {
             (dt.date.fromisoformat(item["date"]), item["series"]): item["sha256"]
@@ -681,13 +689,22 @@ def process_source(
             try:
                 expected_hash = hashes[(record_date, series)]
                 if sha256_file(destination) != expected_hash:
-                    raise ParseError(f"Archive changed before cleanup: {destination}")
+                    raise annotate(
+                        ParseError(f"Archive changed before cleanup: {destination}"),
+                        path=destination,
+                    )
                 if sha256_file(source_path) != expected_hash:
-                    raise ParseError(f"Source changed before cleanup: {source_path}")
+                    raise annotate(
+                        ParseError(f"Source changed before cleanup: {source_path}"),
+                        path=source_path,
+                    )
                 source_path.unlink()
                 deleted_files += 1
             except Exception as exc:  # cleanup must preserve a resumable manifest
                 cleanup_errors.append(f"{source_path}: {exc}")
+                cleanup_items.append(
+                    {"path": str(source_path), "reason": str(exc), "error_type": type(exc).__name__}
+                )
 
         payload["cleanup"] = {
             "requested": True,
@@ -695,13 +712,19 @@ def process_source(
             "deleted_files": deleted_files,
             "errors": cleanup_errors,
         }
-        payload["completed_at"] = dt.datetime.now(config.timezone).isoformat(
-            timespec="seconds"
-        )
+        payload["completed_at"] = dt.datetime.now(config.timezone).isoformat(timespec="seconds")
         _write_json_atomic(manifest_path, payload)
         if cleanup_errors:
-            raise OSError(
-                "Source cleanup was incomplete:\n" + "\n".join(cleanup_errors)
+            raise annotate(
+                OSError("Source cleanup was incomplete:\n" + "\n".join(cleanup_errors)),
+                errors=cleanup_items,
+                manifest_path=manifest_path,
+                completed={
+                    "copied_files": copied_files,
+                    "deleted_files": deleted_files,
+                    "output_updates": sum(item.action == "updated" for item in outputs),
+                    "output_unchanged": sum(item.action == "unchanged" for item in outputs),
+                },
             )
 
     return SourceRunResult(
@@ -726,9 +749,11 @@ def run_pipeline(
     plans = plans_for_ingest(config, now=now)
     if not apply:
         return plans, []
-    return plans, [
-        process_source(config, plan, mode="ingest", now=now) for plan in plans
-    ]
+    results: list[SourceRunResult] = []
+    with diagnostic_context(completed_results=results):
+        for plan in plans:
+            results.append(process_source(config, plan, mode="ingest", now=now))
+    return plans, results
 
 
 def archive_months(source: ProfileConfig) -> Iterator[tuple[int, int]]:
@@ -788,56 +813,61 @@ def _compare_csv(
     expected_rows: Iterable[list[object]],
 ) -> int:
     if not path.is_file():
-        raise FileNotFoundError(f"Expected processed data output is missing: {path}")
+        raise annotate(
+            FileNotFoundError(f"Expected processed data output is missing: {path}"), path=path
+        )
     count = 0
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle)
         actual_header = next(reader, None)
         if actual_header != header:
-            raise ParseError(f"{path}: unexpected header {actual_header}")
+            raise annotate(ParseError(f"{path}: unexpected header {actual_header}"), path=path)
         for expected in expected_rows:
             actual = next(reader, None)
             expected_text = [str(value) for value in expected]
             if actual != expected_text:
-                raise ParseError(
-                    f"{path}: row {count + 1} differs; "
-                    f"expected {expected_text!r}, got {actual!r}"
+                raise annotate(
+                    ParseError(
+                        f"{path}: row {count + 1} differs; "
+                        f"expected {expected_text!r}, got {actual!r}"
+                    ),
+                    path=path,
                 )
             count += 1
         extra = next(reader, None)
         if extra is not None:
-            raise ParseError(f"{path}: unexpected extra row {extra!r}")
+            raise annotate(ParseError(f"{path}: unexpected extra row {extra!r}"), path=path)
     return count
 
 
 def verify_config(config: PipelineConfig) -> list[dict]:
     results: list[dict] = []
     source = config.profile
-    for year, month in archive_months(source):
-        events, daily, expected_events, expected_daily = _expected_month_rows(
-            source, year, month
-        )
-        device_root = config.processed_data_root / source.device_id
-        event_path = (
-            device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
-        )
-        daily_path = (
-            device_root / "DailyUsage" / f"{year:04d}" / f"{month:02d}.csv"
-        )
-        actual_events = _compare_csv(event_path, INPUT_EVENTS_HEADER, events)
-        actual_daily = _compare_csv(daily_path, DAILY_USAGE_HEADER, daily)
-        if actual_events != expected_events or actual_daily != expected_daily:
-            raise ParseError(
-                f"{source.device_id} {year:04d}-{month:02d}: "
-                "row count verification failed"
+    with diagnostic_context(completed={"verified_months": results}):
+        for year, month in archive_months(source):
+            events, daily, expected_events, expected_daily = _expected_month_rows(
+                source, year, month
             )
-        results.append(
-            {
-                "profile": source.name,
-                "device_id": source.device_id,
-                "month": f"{year:04d}-{month:02d}",
-                "input_events": actual_events,
-                "daily_usage": actual_daily,
-            }
-        )
+            device_root = config.processed_data_root / source.device_id
+            event_path = device_root / "InputEvents" / f"{year:04d}" / f"{month:02d}.csv"
+            daily_path = device_root / "DailyUsage" / f"{year:04d}" / f"{month:02d}.csv"
+            actual_events = _compare_csv(event_path, INPUT_EVENTS_HEADER, events)
+            actual_daily = _compare_csv(daily_path, DAILY_USAGE_HEADER, daily)
+            if actual_events != expected_events or actual_daily != expected_daily:
+                raise annotate(
+                    ParseError(
+                        f"{source.device_id} {year:04d}-{month:02d}: row count verification failed"
+                    ),
+                    path=event_path,
+                    daily_usage_path=daily_path,
+                )
+            results.append(
+                {
+                    "profile": source.name,
+                    "device_id": source.device_id,
+                    "month": f"{year:04d}-{month:02d}",
+                    "input_events": actual_events,
+                    "daily_usage": actual_daily,
+                }
+            )
     return results

@@ -152,7 +152,7 @@ def test_config_init_emits_status_and_absolute_path(
         lambda: (destination.resolve(), "created"),
     )
 
-    assert main(["config", "init"]) == 0
+    assert main(["config", "init", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
@@ -344,18 +344,22 @@ def test_build_weekly_prints_progress_summary_and_result_paths(
     assert main(["build-weekly"]) == 0
     captured = capsys.readouterr()
     assert not captured.out.lstrip().startswith("{")
-    assert "[SUCCESS] build-weekly completed." in captured.out
-    assert "Weeks: 3 candidate, 1 generated, 2 unchanged, 1 stale." in captured.out
-    assert "Calendar reports: 4 monthly, 1 yearly." in captured.out
+    assert "status=success" in captured.out
+    assert "candidate_week_count=3" in captured.out
+    assert "generated_week_count=1" in captured.out
+    assert "unchanged_week_count=2" in captured.out
+    assert "stale_week_count=1" in captured.out
+    assert "index.month_report_count=4" in captured.out
+    assert "index.year_report_count=1" in captured.out
     assert "[INFO] Planning fixture weeks" in captured.err
     result_line = next(
-        line for line in captured.out.splitlines() if "Result JSON:" in line
+        line for line in captured.out.splitlines() if line.startswith("result_path=")
     )
-    result_path = Path(result_line.split("Result JSON:", 1)[1].strip())
+    result_path = Path(result_line.split("=", 1)[1])
     assert result_path.is_file()
     assert json.loads(result_path.read_text(encoding="utf-8"))["apply"] is True
     assert opened == [resolved.config.weekly_mart_root / "index.html"]
-    assert "Opened report:" in captured.out
+    assert "browser_status=opened" in captured.out
 
 
 def test_build_weekly_no_open_suppresses_browser(
@@ -387,8 +391,8 @@ def test_build_weekly_no_open_suppresses_browser(
 
     assert main(["build-weekly", "--no-open"]) == 0
     captured = capsys.readouterr()
-    assert "Browser opening suppressed by --no-open." in captured.out
-    assert f"Report: {resolved.config.weekly_mart_root / 'index.html'}" in captured.out
+    assert "browser_status=suppressed" in captured.out
+    assert f"report_path={resolved.config.weekly_mart_root / 'index.html'}" in captured.out
 
 
 def test_build_weekly_browser_failure_warns_without_failing_build(
@@ -420,7 +424,7 @@ def test_build_weekly_browser_failure_warns_without_failing_build(
 
     assert main(["build-weekly"]) == 0
     captured = capsys.readouterr()
-    assert "[SUCCESS] build-weekly completed." in captured.out
+    assert "status=success" in captured.out
     assert "[WARNING] Could not open the report" in captured.err
 
 
@@ -459,10 +463,12 @@ def test_build_weekly_dry_run_does_not_create_logs_or_result_reports(
 
     assert main(["build-weekly", "--dry-run"]) == 0
     captured = capsys.readouterr()
-    assert "dry-run completed" in captured.out
-    assert "No persistent files were changed" in captured.out
-    assert "0 create, 1 replace, 0 update, 0 delete, 0 skip" in captured.out
-    assert "Would stale: 2026-W30 (input changed)" in captured.out
-    assert "Result JSON:" not in captured.out
-    assert "Log:" not in captured.out
+    assert "dry_run=true" in captured.out
+    assert "result_path=null" in captured.out
+    assert "log_path=null" in captured.out
+    assert "missing_week_count=0" in captured.out
+    assert "stale_week_count=1" in captured.out
+    assert "unchanged_week_count=0" in captured.out
+    assert "weeks_to_generate[0].week_id=2026-W30" in captured.out
+    assert "weeks_to_generate[0].reason=input changed" in captured.out
     assert not config.log_dir.exists()

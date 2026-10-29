@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import PipelineConfig, ProfileConfig
+from .diagnostics import annotate, diagnostic_context
 from .pipeline import sha256_file
 
 GENERATOR_VERSION = "0.4.0"
@@ -171,9 +172,12 @@ def _watermark(config: PipelineConfig) -> tuple[dt.date, list[dict[str, str]]]:
     details: list[dict[str, str]] = []
     manifest = _latest_complete_manifest(source)
     if manifest is None:
-        raise ValueError(
-            f"No complete ingest manifest for profile {source.name!r}; "
-            "run 'tkn-itadaki-pipeline ingest' successfully first"
+        raise annotate(
+            ValueError(
+                f"No complete ingest manifest for profile {source.name!r}; "
+                "run 'tkn-itadaki-pipeline ingest' successfully first"
+            ),
+            path=source.archive_root / "_manifests",
         )
     details.append(
         {
@@ -191,7 +195,7 @@ def _watermark(config: PipelineConfig) -> tuple[dt.date, list[dict[str, str]]]:
 def _monthly_files(root: Path) -> list[SourceFile]:
     result: list[SourceFile] = []
     if not root.is_dir():
-        raise FileNotFoundError(f"Processed data path not found: {root}")
+        raise annotate(FileNotFoundError(f"Processed data path not found: {root}"), path=root)
     for device_root in sorted(path for path in root.iterdir() if path.is_dir()):
         for dataset in ("DailyUsage", "InputEvents"):
             dataset_root = device_root / dataset
@@ -1298,7 +1302,9 @@ def build_weekly(
 ) -> dict[str, Any]:
     """Plan or build missing and stale complete ISO weeks."""
     if config.weekly_mart_root is None:
-        raise ValueError("weekly_mart_path is required for build-weekly")
+        raise annotate(
+            ValueError("weekly_mart_path is required for build-weekly"), path=config.config_path
+        )
     if progress:
         progress("Reading ingest watermark")
     cutoff, watermark_profiles = _watermark(config)
@@ -1307,10 +1313,16 @@ def build_weekly(
         progress("Scanning processed monthly CSV files")
     files = _monthly_files(config.processed_data_root)
     bounds_sources = [item for item in files if item.dataset == "DailyUsage"] or files
-    bounds_by_file = [(source_file, _row_dates(source_file)) for source_file in bounds_sources]
+    bounds_by_file = []
+    for source_file in bounds_sources:
+        with diagnostic_context(path=source_file.path):
+            bounds_by_file.append((source_file, _row_dates(source_file)))
     populated = [(source_file, bounds) for source_file, bounds in bounds_by_file if bounds]
     if not populated:
-        raise ValueError("No source rows found under processed_data_path")
+        raise annotate(
+            ValueError("No source rows found under processed_data_path"),
+            path=config.processed_data_root,
+        )
     earliest = min(bounds[0] for _, bounds in populated)
     if earliest > eligible_end:
         weeks: list[Week] = []
@@ -1322,7 +1334,10 @@ def build_weekly(
         if current is None:
             device_bounds[source_file.device_id] = bounds
         else:
-            device_bounds[source_file.device_id] = (min(current[0], bounds[0]), max(current[1], bounds[1]))
+            device_bounds[source_file.device_id] = (
+                min(current[0], bounds[0]),
+                max(current[1], bounds[1]),
+            )
     cache: dict[Path, dict[str, Any]] = {}
     if progress:
         progress(f"Planning {len(weeks)} complete ISO weeks")
@@ -1342,42 +1357,41 @@ def build_weekly(
             f"{sum(plan.status == 'unchanged' for plan in plans)} unchanged"
         )
     generated: list[str] = []
-    if apply:
-        for index, plan in enumerate(targets, start=1):
-            if progress and (
-                index == 1 or index == len(targets) or index % 10 == 0
-            ):
-                progress(
-                    f"Weekly reports {index}/{len(targets)}: "
-                    f"{plan.week.week_id} ({plan.status})"
-                )
-            data = _aggregate(plan, device_bounds)
-            _write_week(plan, data, config, cutoff, watermark_profiles)
-            generated.append(plan.week.week_id)
-        if progress:
-            progress("Building calendar month/year reports and root index")
-        root_result = _write_root(
-            config,
-            weeks,
-            files,
-            cutoff,
-            watermark_profiles,
-            earliest,
-            eligible_end,
-            progress,
-        )
-    else:
-        month_count = len(_calendar_periods(earliest, eligible_end, "month"))
-        year_count = len(_calendar_periods(earliest, eligible_end, "year"))
-        root_result = {
-            "index_changed": not (config.weekly_mart_root / "index.html").is_file(),
-            "history_changed": not (config.weekly_mart_root / "weekly_history.csv").is_file(),
-            "manifest_changed": not (config.weekly_mart_root / "manifest.json").is_file(),
-            "week_count": len(weeks),
-            "month_report_count": month_count,
-            "year_report_count": year_count,
-            "calendar_reports_changed": None,
-        }
+    with diagnostic_context(completed={"generated_weeks": generated}):
+        if apply:
+            for index, plan in enumerate(targets, start=1):
+                if progress and (index == 1 or index == len(targets) or index % 10 == 0):
+                    progress(
+                        f"Weekly reports {index}/{len(targets)}: "
+                        f"{plan.week.week_id} ({plan.status})"
+                    )
+                data = _aggregate(plan, device_bounds)
+                _write_week(plan, data, config, cutoff, watermark_profiles)
+                generated.append(plan.week.week_id)
+            if progress:
+                progress("Building calendar month/year reports and root index")
+            root_result = _write_root(
+                config,
+                weeks,
+                files,
+                cutoff,
+                watermark_profiles,
+                earliest,
+                eligible_end,
+                progress,
+            )
+        else:
+            month_count = len(_calendar_periods(earliest, eligible_end, "month"))
+            year_count = len(_calendar_periods(earliest, eligible_end, "year"))
+            root_result = {
+                "index_changed": not (config.weekly_mart_root / "index.html").is_file(),
+                "history_changed": not (config.weekly_mart_root / "weekly_history.csv").is_file(),
+                "manifest_changed": not (config.weekly_mart_root / "manifest.json").is_file(),
+                "week_count": len(weeks),
+                "month_report_count": month_count,
+                "year_report_count": year_count,
+                "calendar_reports_changed": None,
+            }
     return {
         "apply": apply,
         "mart_path": str(config.weekly_mart_root),

@@ -67,8 +67,8 @@ tkn-itadaki-pipeline config init
 ```
 
 このコマンドは、packageに含まれる公開用テンプレートから
-`~/.tkn/itadaki_data_pipeline/config.yaml`を作成し、`created`と絶対パスをJSONで
-表示します。同じ内容で再実行した場合は`unchanged`となり、ファイルを書き換えません。
+`~/.tkn/itadaki_data_pipeline/config.yaml`を作成し、`created`と絶対パスを一覧で
+表示します（`--json`指定時はJSON）。同じ内容で再実行した場合は`unchanged`となり、ファイルを書き換えません。
 既存ファイルがテンプレートと異なる場合は、編集済み設定を保護するためエラーで停止します。
 network access、データ移動、ログ作成は行いません。
 
@@ -109,11 +109,6 @@ profiles:
 `device_id`別に保存します。
 `config init`が作成するファイルには、公開用の全設定例が含まれています。
 
-以前の`source`選択用設定である`sources`と`modes`は使用できません。各`sources`
-entryを`profiles`へ移し、`timezone`をprofile内へ移動して、`default_profile`を
-指定してください。`ingest --backfill`も廃止され、過去データは対象profileを
-`--profile`で指定して取り込みます。
-
 設定を確認します。
 
 ```console
@@ -145,11 +140,6 @@ JSONを使う自動処理では、`--json`を指定します。
 ```console
 tkn-itadaki-pipeline config list --json
 ```
-
-0.8.0では旧`config show`を廃止しました。従来のJSONを読み取る処理は
-`config list --json`へ変更してください。`config_sources`と`values`は維持し、
-`winning_sources`を追加しています。設定ファイルの移行は不要です。
-変更履歴は[CHANGELOG.md](CHANGELOG.md)に記載しています。
 
 別のprofileを確認する場合は、`--profile`で`profiles.name`を指定します。
 
@@ -217,10 +207,11 @@ tkn-itadaki-pipeline build-weekly --no-open
 `--profile`を省略した場合、`default_profile`の最新の正常な`ingest`をwatermarkに
 使用し、共有の`processed_data_path`にある全`device_id`のデータを集計します。
 
-通常実行では処理状況をコンソールへ順次表示し、終了時に対象週数、生成週数、
-月次・年次レポート数、mart pathを要約します。入力fingerprintや週ごとの詳細を
-含むJSON結果はコンソールへ展開せず、終了時に表示する`Result JSON`のパスへ
-保存します。テキストログのパスも`Log`として表示します。
+通常実行では進捗を標準エラーへ、最終結果を標準出力へ表示します。
+対象週数、生成週数、月次・年次レポート数、mart pathと、保存したJSON結果の
+`result_path`、テキストログの`log_path`を一覧で確認できます。
+`--json`で標準出力をJSONに、`--full-output`で生成した全week IDを含む詳細表示に
+切り替えられます。保存するJSON結果の内容と生成条件は、これらの表示optionで変わりません。
 
 ### 4. 作成済みデータを検証する
 
@@ -252,6 +243,54 @@ platform標準の一時領域だけを使用し、終了時に残しません。
 入力が変わる可能性があるため、通常実行ではコピー、置換、削除の直前にもhashと
 保護条件を再検証します。
 
+## CLIの結果表示
+
+`ingest`、`verify`、`build-weekly`、`config init`、`config list`は、
+標準出力に1回の最終結果を表示します。既定は1行1項目の`key=value`で、
+入れ子は`.`、配列は`[0]`などのindexで表します。Windowsのパスは引用符で囲まず、
+backslashを二重にescapeせず、切り詰めません。改行などの制御文字はescapeします。
+進捗・警告・診断は標準エラーへ分離します。
+
+```console
+tkn-itadaki-pipeline ingest --dry-run
+tkn-itadaki-pipeline verify --details
+tkn-itadaki-pipeline --json ingest --dry-run
+tkn-itadaki-pipeline config --json list
+```
+
+`--json`はコマンドの前後、`config`とそのサブコマンドの間にも置けます。
+指定すると、引数エラー、設定エラー、検証・実行時エラー、中断時も可能な限り
+1つのJSON documentを返します。pipeやredirect、TTYの違いでは形式を切り替えません。
+`--help`と`--version`は通常の案内を表示します。
+
+`--quiet`（`-q`）は標準エラーをエラーだけに、`--verbose`（`-v`）はdebug診断を
+含む表示にします。同時指定はできません。どちらも最終結果を抑制せず、形式を変えません。
+
+`--full-output`は一覧とJSONの両方で情報量だけを変えます。`ingest`では計画中の
+全source fileのパス、`verify`では全device-monthの詳細、`build-weekly`では生成した
+全week IDを含めます。既存の`verify --details`も同じ詳細表示に使えます。
+省略時は件数と`details_hint`を表示し、警告や要確認の対象・理由は確認できるようにします。
+取り込みmanifestには、これまでどおりファイル・出力単位の詳しい記録が残ります。
+
+終了コードは`0`が成功、`1`が設定・検証・実行時エラーや一部失敗、`2`が引数エラー、
+`130`が中断です。途中で失敗した場合の`completed`は、その時点で確認できた完了情報です。
+正常な生成後にブラウザーだけ開けなかった場合は、従来どおり警告付きの成功です。
+対象パスは`errors[].path`や`targets`、理由は`errors[].reason`に分けて返します。
+
+`ingest`の結果は`plans`・`results`・`counts`を含む1つのobjectです。
+`verify`の月別情報は`--details`または`--full-output`で表示します。
+PowerShellでJSONの結果を解析する例:
+
+```powershell
+$result = tkn-itadaki-pipeline verify --json --details | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw "Verification failed; inspect the result errors" }
+$result.months
+```
+
+表示optionは、設定ファイル、処理APIの戻り値、保存するJSON・manifest・CSV・HTMLの形式に
+影響しません。CLI結果のkey・型は[CLI output contract](docs/cli-output.md)、
+変更履歴は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+
 ## 出力
 
 検証済みの元データは、設定した`destination_path`の下へ端末別Raw archiveとして
@@ -262,9 +301,8 @@ platform標準の一時領域だけを使用し、終了時に残しません。
 <destination-path>/Raw/yyyy/MM/<series>/yyyyMMdd.rec
 ```
 
-0.7.0より前のpipelineで作成した`<destination-path>/Rec`がある場合は、実行前に
-そのフォルダを`Raw`へ一度だけ名前変更してください。`Rec`と`Raw`の両方が存在する
-状態での自動統合は行いません。
+`ingest`は`<destination-path>/Rec`が存在する場合、archiveの配置を検証して
+エラーで停止します。`Rec`と`Raw`の自動統合は行いません。
 
 分析用CSVは次の場所へ出力されます。
 

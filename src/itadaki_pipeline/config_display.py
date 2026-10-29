@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import PurePath
 from typing import Any
 
 
@@ -24,11 +25,13 @@ def config_lines(value: Any, prefix: str = "") -> list[str]:
             for index, item in enumerate(value)
             for line in config_lines(item, f"{prefix}[{index}]")
         ]
+    if isinstance(value, PurePath):
+        value = str(value)
     if isinstance(value, str):
         escapes = {"\r": "\\r", "\n": "\\n", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
         display = "".join(
             escapes.get(char, f"\\u{ord(char):04x}")
-            if ord(char) < 32 or ord(char) in {127, 133, 0x2028, 0x2029}
+            if ord(char) < 32 or 127 <= ord(char) < 160 or ord(char) in {0x2028, 0x2029}
             else char
             for char in value
         )

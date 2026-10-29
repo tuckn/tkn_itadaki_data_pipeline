@@ -8,6 +8,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from .diagnostics import annotate, diagnostic_context
+
 KEY_NAMES = [
     "[BS]", "[TAB]", "[Enter]", "[Shift]", "[LShift]", "[RShift]",
     "[LCtrl]", "[RCtrl]", "[Alt]", "[Ctrl]", "[Esc]", "[変換]",
@@ -54,7 +56,9 @@ def date_from_filename(path: Path) -> dt.date:
     try:
         return dt.datetime.strptime(path.stem, "%Y%m%d").date()
     except ValueError as exc:
-        raise ParseError(f"Invalid Itadaki date filename: {path.name}") from exc
+        raise annotate(
+            ParseError(f"Invalid Itadaki date filename: {path.name}"), path=path
+        ) from exc
 
 
 def delphi_datetime_to_python(value: float) -> dt.datetime:
@@ -75,35 +79,40 @@ def iter_key_file(
     *,
     expected_date: dt.date | None = None,
 ) -> Iterator[ParsedEvent]:
-    data = path.read_bytes()
-    if len(data) % KEY_RECORD_SIZE:
-        raise ParseError(
-            f"{path}: size {len(data)} is not divisible by {KEY_RECORD_SIZE}"
-        )
-
-    for index in range(len(data) // KEY_RECORD_SIZE):
-        offset = index * KEY_RECORD_SIZE
-        code = struct.unpack_from("<I", data, offset)[0]
-        raw_timestamp = struct.unpack_from("<d", data, offset + 4)[0]
-        event_datetime = delphi_datetime_to_python(raw_timestamp)
-        if expected_date is not None and event_datetime.date() != expected_date:
-            raise ParseError(
-                f"{path}: event {index} has date {event_datetime.date()}, "
-                f"expected {expected_date}"
+    with diagnostic_context(path=path):
+        data = path.read_bytes()
+        if len(data) % KEY_RECORD_SIZE:
+            raise annotate(
+                ParseError(f"{path}: size {len(data)} is not divisible by {KEY_RECORD_SIZE}"),
+                path=path,
             )
-        yield ParsedEvent(
-            index=index,
-            code=code,
-            key_name=key_name(code),
-            is_mouse=code in (100, 101),
-            datetime_local=event_datetime.replace(tzinfo=JST),
-        )
+
+        for index in range(len(data) // KEY_RECORD_SIZE):
+            offset = index * KEY_RECORD_SIZE
+            code = struct.unpack_from("<I", data, offset)[0]
+            raw_timestamp = struct.unpack_from("<d", data, offset + 4)[0]
+            event_datetime = delphi_datetime_to_python(raw_timestamp)
+            if expected_date is not None and event_datetime.date() != expected_date:
+                raise annotate(
+                    ParseError(
+                        f"{path}: event {index} has date {event_datetime.date()}, "
+                        f"expected {expected_date}"
+                    ),
+                    path=path,
+                )
+            yield ParsedEvent(
+                index=index,
+                code=code,
+                key_name=key_name(code),
+                is_mouse=code in (100, 101),
+                datetime_local=event_datetime.replace(tzinfo=JST),
+            )
 
 
 def _read_exact(path: Path, size: int) -> bytes:
     data = path.read_bytes()
     if len(data) != size:
-        raise ParseError(f"{path}: expected {size} bytes, got {len(data)}")
+        raise annotate(ParseError(f"{path}: expected {size} bytes, got {len(data)}"), path=path)
     return data
 
 
@@ -123,11 +132,11 @@ def validate_series_file(path: Path, series: str) -> None:
     if series == "Key":
         size = path.stat().st_size
         if size % KEY_RECORD_SIZE:
-            raise ParseError(
-                f"{path}: size {size} is not divisible by {KEY_RECORD_SIZE}"
+            raise annotate(
+                ParseError(f"{path}: size {size} is not divisible by {KEY_RECORD_SIZE}"), path=path
             )
         return
     expected = SERIES_SIZES[series]
     actual = path.stat().st_size
     if actual != expected:
-        raise ParseError(f"{path}: expected {expected} bytes, got {actual}")
+        raise annotate(ParseError(f"{path}: expected {expected} bytes, got {actual}"), path=path)

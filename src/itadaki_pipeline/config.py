@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from .diagnostics import annotate, diagnostic_context
 from .paths import CONFIG_FILENAME, AppPaths, runtime_temp_base, user_paths
 
 DEFAULT_CONFIG_RESOURCE = "resources/config.example.yaml"
@@ -141,16 +142,16 @@ def _timezone(name: str) -> dt.tzinfo:
 
 def _load_mapping(path: Path) -> dict[str, Any]:
     if path.suffix.lower() not in {".yaml", ".yml"}:
-        raise ValueError(f"Config must be a YAML file (.yaml or .yml): {path}")
+        raise annotate(ValueError(f"Config must be a YAML file (.yaml or .yml): {path}"), path=path)
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        raise ValueError(f"Cannot read config {path}: {exc}") from exc
+        raise annotate(ValueError(f"Cannot read config {path}: {exc}"), path=path) from exc
 
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise ValueError(f"Config must be a mapping: {path}")
+        raise annotate(ValueError(f"Config must be a mapping: {path}"), path=path)
     return dict(value)
 
 
@@ -174,13 +175,16 @@ def _build_config(
     profile_name: str | None,
 ) -> PipelineConfig:
     if "sources" in raw:
-        raise ValueError(
-            "Config key 'sources' is no longer supported; use 'profiles' and "
-            "'default_profile'"
+        raise annotate(
+            ValueError(
+                "Config key 'sources' is no longer supported; use 'profiles' and 'default_profile'"
+            ),
+            path=config_path,
         )
     if "timezone" in raw:
-        raise ValueError(
-            "Top-level 'timezone' is no longer supported; set it on each profile"
+        raise annotate(
+            ValueError("Top-level 'timezone' is no longer supported; set it on each profile"),
+            path=config_path,
         )
     _only_known_keys(
         raw,
@@ -196,21 +200,23 @@ def _build_config(
 
     processed_data_root_value = raw.get("processed_data_path")
     if not processed_data_root_value:
-        raise ValueError("processed_data_path is required")
+        raise annotate(ValueError("processed_data_path is required"), path=config_path)
 
     profile_items = raw.get("profiles", [])
     if not isinstance(profile_items, list) or not profile_items:
-        raise ValueError("At least one profiles entry is required")
+        raise annotate(ValueError("At least one profiles entry is required"), path=config_path)
 
     profiles: list[ProfileConfig] = []
     names: set[str] = set()
     for item in profile_items:
         if not isinstance(item, dict):
-            raise ValueError("Each profiles entry must be a mapping")
+            raise annotate(ValueError("Each profiles entry must be a mapping"), path=config_path)
         if "modes" in item:
-            raise ValueError(
-                "Profile key 'modes' is no longer supported; select one profile "
-                "with --profile"
+            raise annotate(
+                ValueError(
+                    "Profile key 'modes' is no longer supported; select one profile with --profile"
+                ),
+                path=config_path,
             )
         _only_known_keys(
             item,
@@ -225,29 +231,32 @@ def _build_config(
             location=f"{config_path}: profiles entry",
         )
         if "name" not in item:
-            raise ValueError("Each profiles entry requires name")
+            raise annotate(ValueError("Each profiles entry requires name"), path=config_path)
         name = str(item["name"])
         if not name:
-            raise ValueError("Profile name must not be empty")
+            raise annotate(ValueError("Profile name must not be empty"), path=config_path)
         if name in names:
-            raise ValueError(f"Duplicate profile name: {name}")
+            raise annotate(ValueError(f"Duplicate profile name: {name}"), path=config_path)
         names.add(name)
 
         source_path = item.get("source_path")
         destination_path = item.get("destination_path")
         device_id = item.get("device_id")
         if not device_id:
-            raise ValueError(f"{name}: device_id is required")
+            raise annotate(ValueError(f"{name}: device_id is required"), path=config_path)
         if not source_path:
-            raise ValueError(f"{name}: source_path is required")
+            raise annotate(ValueError(f"{name}: source_path is required"), path=config_path)
         if not destination_path:
-            raise ValueError(f"{name}: destination_path is required")
+            raise annotate(ValueError(f"{name}: destination_path is required"), path=config_path)
 
         itadaki_root = _path(str(source_path), cwd)
         if itadaki_root.name.casefold() == ITADAKI_REC_DIRECTORY.casefold():
-            raise ValueError(
-                f"{name}: source_path must be the Itadaki folder, not its Rec "
-                f"subfolder: {itadaki_root.parent}"
+            raise annotate(
+                ValueError(
+                    f"{name}: source_path must be the Itadaki folder, not its Rec "
+                    f"subfolder: {itadaki_root.parent}"
+                ),
+                path=config_path,
             )
 
         timezone_name = str(item.get("timezone", "Asia/Tokyo"))
@@ -265,18 +274,23 @@ def _build_config(
 
     default_profile_value = raw.get("default_profile")
     if not default_profile_value:
-        raise ValueError("default_profile is required")
+        raise annotate(ValueError("default_profile is required"), path=config_path)
     default_profile_name = str(default_profile_value)
     if default_profile_name not in names:
-        raise ValueError(
-            f"Unknown default_profile {default_profile_name!r}; available profiles: "
-            f"{sorted(names)}"
+        raise annotate(
+            ValueError(
+                f"Unknown default_profile {default_profile_name!r}; available profiles: "
+                f"{sorted(names)}"
+            ),
+            path=config_path,
         )
     selected_profile_name = profile_name or default_profile_name
     if selected_profile_name not in names:
-        raise ValueError(
-            f"Unknown profile {selected_profile_name!r}; available profiles: "
-            f"{sorted(names)}"
+        raise annotate(
+            ValueError(
+                f"Unknown profile {selected_profile_name!r}; available profiles: {sorted(names)}"
+            ),
+            path=config_path,
         )
 
     weekly_mart_value = raw.get("weekly_mart_path")
@@ -291,9 +305,7 @@ def _build_config(
         default_profile_name=default_profile_name,
         selected_profile_name=selected_profile_name,
         profiles=tuple(profiles),
-        weekly_mart_root=(
-            _path(str(weekly_mart_value), cwd) if weekly_mart_value else None
-        ),
+        weekly_mart_root=(_path(str(weekly_mart_value), cwd) if weekly_mart_value else None),
     )
 
 
@@ -330,20 +342,22 @@ def resolve_config(
 
     if last_path is None:
         searched = ", ".join(str(path) for path in candidates)
-        raise FileNotFoundError(f"No configuration file found. Searched: {searched}")
+        raise annotate(
+            FileNotFoundError(f"No configuration file found. Searched: {searched}"),
+            config_paths=candidates,
+        )
 
-    config = _build_config(
-        values,
-        cwd=current,
-        config_path=last_path,
-        paths=paths,
-        profile_name=profile_name,
-    )
+    with diagnostic_context(path=last_path):
+        config = _build_config(
+            values,
+            cwd=current,
+            config_path=last_path,
+            paths=paths,
+            profile_name=profile_name,
+        )
     winning_sources = {
         key: origins.get(key, "built-in")
-        for key in (
-            "default_profile", "processed_data_path", "weekly_mart_path", "log_path"
-        )
+        for key in ("default_profile", "processed_data_path", "weekly_mart_path", "log_path")
     }
     winning_sources["selected_profile"] = (
         "CLI" if profile_name else winning_sources["default_profile"]
@@ -351,7 +365,11 @@ def resolve_config(
     # Each higher-priority profiles list replaces the entire lower-priority list.
     for index, item in enumerate(values["profiles"]):
         for key in (
-            "name", "device_id", "timezone", "source_path", "destination_path",
+            "name",
+            "device_id",
+            "timezone",
+            "source_path",
+            "destination_path",
             "delete_after_success",
         ):
             winning_sources[f"profiles[{index}].{key}"] = (
