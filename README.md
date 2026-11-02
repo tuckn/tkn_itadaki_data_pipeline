@@ -1,6 +1,6 @@
-# Tkn Itadaki Data Pipeline
+# Tkn Itadaki Data Pipeline — Itadakiのキー・マウス操作ログをCSVと集計レポートにするCLI
 
-WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと』](https://www.vector.co.jp/soft/win95/util/se263388.html) （以後、Itadaki）が記録したキーボードとマウスの操作ログである日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
+`tkn-itadaki-pipeline`は、WindVoice氏作成のフリーソフト[『あの頂をめざせ！ぐれいと』](https://www.vector.co.jp/soft/win95/util/se263388.html) （以後、Itadaki）が記録したキーボードとマウスの操作ログである日別の`.rec`ファイルを安全に保管し、分析に使える月次CSVへ
 変換し、Itadaki単独の観測値をISO週で集計・可視化するCLIです。
 
 当日分の記録は処理せず、完了した日だけを対象にします。変更を行うコマンドは
